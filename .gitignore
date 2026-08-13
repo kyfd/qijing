@@ -1,0 +1,43 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Local build output
+/build/windows/*.exe
+/dist/
+/ecosystem-desktop.exe
+/ecosystem.exe
+/ecosystem-scanner.exe
+
+# Go workspace / debug
+vendor/
+*.coverprofile
+coverage.out
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# App runtime (never commit user data or keys)
+*.db
+*.db-journal
+*.dpapi
+secrets/
+FileEcosystem/
+
+# Scratch / local screenshots
+gui-test-screenshots/
+cmd/_tmpkey/
+*.tmp
+
+# Local agent/editor plans
+.zcode/

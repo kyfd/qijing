@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b100e">
+  <title>栖境 · 文件生态系统 Agent</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="command-deck">
+      <div class="deck-primary">
+        <a class="brand" href="#" aria-label="栖境首页">
+          <img class="brand-mark" src="assets/appicon.png" width="44" height="44" alt="">
+          <span class="brand-copy">
+            <strong>栖境</strong>
+            <small>只读观察</small>
+          </span>
+        </a>
+
+        <div class="search-wrap">
+          <span class="search-icon" aria-hidden="true"></span>
+          <input id="searchInput" type="search" placeholder="搜索文件、区域或路径…" autocomplete="off" aria-label="搜索文件、区域或路径">
+          <kbd>Ctrl K</kbd>
+          <div id="searchResults" class="search-results" hidden></div>
+        </div>
+
+        <nav class="deck-actions" aria-label="主导航">
+          <button id="privacyBtn" class="deck-button" type="button" aria-label="隐私审计" title="隐私审计">
+            <span class="shield-icon" aria-hidden="true"></span>
+            <span class="button-label">隐私审计</span>
+          </button>
+          <button id="settingsBtn" class="deck-button" type="button" aria-label="根目录设置" title="根目录设置">
+            <span class="gear-icon" aria-hidden="true"></span>
+            <span class="button-label">设置</span>
+          </button>
+          <button id="agentPatrolBtn" class="deck-button deck-agent" type="button" aria-label="让 Agent 巡视" title="让 Agent 巡视">
+            <span class="agent-avatar" aria-hidden="true">栖</span>
+            <span class="button-label">巡视</span>
+          </button>
+          <button id="scanBtn" class="scan-button" type="button">
+            <span class="scan-dot"></span><span>开始扫描</span>
+          </button>
+        </nav>
+      </div>
+
+      <div class="deck-secondary">
+        <div class="trust-chip" aria-label="安全承诺">
+          <span><i class="eye-mini"></i>只读</span>
+          <span><i class="lock-mini"></i>无改写</span>
+          <span id="networkTrust"><i class="cloud-mini"></i>模型联网关闭</span>
+          <span id="providerTrust" class="trust-note">本地规则 Agent</span>
+        </div>
+        <div class="deck-status">
+          <span id="lastScan">尚未扫描</span>
+          <span id="connectionState" class="connection-state">本地待命</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <main>
+        <section class="map-panel" aria-label="文件生态地图">
+          <div class="map-toolbar">
+            <div class="map-heading">
+              <p class="eyebrow">黄昏观测台</p>
+              <h1>你的文件，正在呼吸</h1>
+            </div>
+            <div class="map-toolbar-side">
+              <div class="legend" aria-label="地图图例">
+                <span><i class="healthy"></i>健康</span>
+                <span><i class="attention"></i>关注</span>
+                <span><i class="dormant"></i>休眠</span>
+              </div>
+              <div class="map-toolbar-note">露珠大小代表占用 · 色彩代表生态分区</div>
+            </div>
+          </div>
+
+          <div id="scanProgress" class="scan-progress" data-state="idle" role="status" aria-live="polite" aria-atomic="true" aria-busy="false">
+            <div class="scan-progress-main">
+              <span class="scan-state-mark" aria-hidden="true"></span>
+              <div class="scan-progress-copy">
+                <strong id="scanProgressTitle">扫描待命</strong>
+                <span id="scanProgressRoot">等待开始只读观察</span>
+              </div>
+            </div>
+            <div class="scan-progress-metrics" aria-label="扫描统计">
+              <span><small>文件</small><strong id="scanProgressFiles">0</strong></span>
+              <span><small>目录</small><strong id="scanProgressDirs">0</strong></span>
+              <span><small>已观察</small><strong id="scanProgressBytes">0 B</strong></span>
+              <span><small>耗时</small><strong id="scanProgressElapsed">—</strong></span>
+              <span class="scan-budget"><small>预算</small><strong id="scanProgressBudget">等待任务</strong></span>
+            </div>
+            <div class="scan-progress-track" role="progressbar" aria-label="扫描进行中" aria-valuetext="扫描待命"><i></i></div>
+          </div>
+
+          <div id="canvasStage" class="canvas-stage">
+            <canvas id="ecosystemCanvas" aria-label="可拖拽缩放的文件生态图"></canvas>
+            <div class="canvas-hint"><span class="mouse-icon"></span>拖拽漫游 · 滚轮缩放 · 点击探索</div>
+            <div class="zoom-controls" aria-label="地图缩放控件">
+              <button id="zoomIn" type="button" aria-label="放大">＋</button>
+              <button id="resetView" type="button" aria-label="重置视图">◎</button>
+              <button id="zoomOut" type="button" aria-label="缩小">−</button>
+            </div>
+            <div id="mapTooltip" class="map-tooltip" hidden></div>
+
+            <div id="emptyState" class="empty-state">
+              <div class="empty-hero" aria-hidden="true">
+                <img class="empty-mark" src="assets/appicon.png" width="96" height="96" alt="">
+              </div>
+              <p class="eyebrow">一片尚未被观察的土地</p>
+              <h2>让文件长成一座生态系统</h2>
+              <p>授权一个根目录后，栖境会在本地只读分析文件的大小、活跃度与重复关系。</p>
+              <div class="empty-actions">
+                <button id="emptyRootBtn" class="primary-button" type="button">设置观察根目录</button>
+                <button id="demoBtn" class="text-button" type="button">先看看演示生态 <span>→</span></button>
+              </div>
+            </div>
+          </div>
+
+          <footer class="map-footer">
+            <div id="mapStats" class="map-stats">
+              <span><strong>0</strong> 个文件</span>
+              <span><strong>0 B</strong> 已观察</span>
+              <span><strong>0</strong> 个建议</span>
+            </div>
+            <p>永不删除、移动、重命名或写入源文件</p>
+          </footer>
+        </section>
+
+        <aside class="insights-panel" aria-label="生态简报">
+          <div class="panel-title">
+            <div>
+              <p class="eyebrow">野外手记</p>
+              <h2>今日生态简报</h2>
+            </div>
+            <div class="health-wrap">
+              <span id="healthScore" class="health-score">—</span>
+              <small>健康度</small>
+            </div>
+          </div>
+
+          <div class="agent-cta-card">
+            <div class="agent-cta-copy">
+              <strong>让 Agent 巡视</strong>
+              <small>先预览匿名 payload，再由你确认</small>
+            </div>
+            <button class="secondary-button agent-cta-button" type="button" onclick="document.getElementById('agentPatrolBtn').click()">开始</button>
+          </div>
+
+          <div id="briefCards" class="brief-cards">
+            <article class="brief-card muted-card">
+              <span class="card-symbol">◌</span>
+              <div>
+                <strong>等待第一次观察</strong>
+                <p>扫描后，这里会出现值得留意的生态变化。</p>
+              </div>
+            </article>
+          </div>
+
+          <div class="zone-index">
+            <div class="section-label"><span>区域索引</span><small>按占用排序</small></div>
+            <div id="zoneList" class="zone-list"><p class="quiet">暂无区域数据</p></div>
+          </div>
+
+          <div class="agent-note">
+            <span class="agent-avatar">栖</span>
+            <p><strong>Agent 正在本地待命</strong><br>所有推断仅在你的设备上发生。</p>
+            <i class="pulse"></i>
+          </div>
+        </aside>
+      </main>
+    </div>
+  </div>
+
+  <aside id="detailDrawer" class="detail-drawer" aria-hidden="true" aria-label="文件详情">
+    <button class="drawer-close" type="button" aria-label="关闭详情">×</button>
+    <div id="drawerContent"></div>
+  </aside>
+  <div id="backdrop" class="backdrop" hidden></div>
+
+  <dialog id="settingsDialog" class="modal">
+    <form method="dialog" class="modal-card settings-card">
+      <button class="modal-close" value="cancel" aria-label="关闭">×</button>
+      <p class="eyebrow">本地配置</p>
+      <h2>栖境设置</h2>
+      <div class="settings-tabs" role="tablist">
+        <button class="active" type="button" data-settings-tab="roots">观察目录</button>
+        <button type="button" data-settings-tab="agent">Agent 模型</button>
+      </div>
+      <section id="rootsSettings" class="settings-pane">
+        <p class="modal-intro">栖境只读取元数据与本地路径，不读取文件内容，也不具备修改权限。</p>
+        <div id="rootsList" class="roots-list"></div>
+        <div class="native-picker-row">
+          <button id="chooseRootBtn" class="native-picker-button" type="button"><span aria-hidden="true">▣</span> 选择文件夹</button>
+          <small id="pickerHint">桌面版将打开 Windows 目录选择器</small>
+        </div>
+        <section class="computer-scan-card" aria-labelledby="computerScanTitle">
+          <div>
+            <p class="eyebrow">整机观察</p>
+            <h3 id="computerScanTitle">扫描整台电脑</h3>
+            <p>选择本机固定磁盘建立只读元数据索引。系统目录、凭据目录、缓存和链接会被跳过。</p>
+          </div>
+          <div id="driveList" class="drive-list"><p class="quiet">正在等待桌面磁盘信息…</p></div>
+          <button id="computerScanBtn" class="computer-scan-button" type="button" disabled>确认范围并扫描</button>
+          <small id="driveStatus" class="field-help">不会自动包含 U 盘、光驱或网络盘。</small>
+        </section>
+        <label class="field-label" for="rootPath">或手动添加路径</label>
+        <div class="path-input">
+          <span>⌁</span>
+          <input id="rootPath" type="text" placeholder="例如 D:\Documents">
+          <button id="addRootBtn" type="button">授权观察</button>
+        </div>
+        <p class="field-help">授权记录只保存在本机。移除根目录不会影响原文件。</p>
+      </section>
+      <section id="agentSettings" class="settings-pane" hidden>
+        <p class="modal-intro">可使用 OpenAI-compatible 云端服务，或 Ollama、LM Studio 等本地模型。API Key 只交给本地服务保存，界面不会读取。测试连接会先保存当前表单。</p>
+        <div class="type-switch" role="radiogroup">
+          <label><input type="radio" name="providerType" value="cloud" checked><span>云端模型</span></label>
+          <label><input type="radio" name="providerType" value="local"><span>本地模型</span></label>
+        </div>
+        <div class="model-fields">
+          <label><span>Base URL</span><input id="agentBaseUrl" type="url" placeholder="https://api.openai.com/v1" autocomplete="url"></label>
+          <label><span>模型</span><input id="agentModel" type="text" placeholder="deepseek-v4-flash" autocomplete="off"></label>
+          <label class="full"><span>API Key <small>留空则保留已保存密钥</small></span><input id="agentApiKey" type="password" placeholder="sk-••••••••" autocomplete="new-password"></label>
+        </div>
+        <label class="network-toggle">
+          <span><strong>允许模型联网</strong><small>云端请求仅发送确认过的匿名 payload</small></span>
+          <input id="networkEnabled" type="checkbox"><i></i>
+        </label>
+        <div class="settings-actions">
+          <button id="testAgentBtn" class="secondary-button" type="button">测试连接</button>
+          <button id="saveAgentBtn" class="primary-button" type="button">保存设置</button>
+        </div>
+        <p id="agentSettingsStatus" class="field-help" role="status"></p>
+      </section>
+    </form>
+  </dialog>
+
+  <dialog id="computerScanDialog" class="modal">
+    <form method="dialog" class="modal-card computer-confirm-card">
+      <button class="modal-close" value="cancel" aria-label="关闭">×</button>
+      <p class="eyebrow">高范围授权</p>
+      <h2>确认整台电脑观察范围</h2>
+      <p class="modal-intro">栖境将扫描下列本地固定磁盘的文件元数据。不会读取正文、计算全盘哈希或修改任何源文件。</p>
+      <div id="computerScanSummary" class="scope-summary"></div>
+      <div class="scope-warning">
+        <i class="lock-mini"></i>
+        <span>默认跳过 Windows 系统目录、凭据目录、缓存、回收站、junction、符号链接与云端占位文件；达到扫描预算时会保留部分只读快照并停止。</span>
+      </div>
+      <div class="modal-actions">
+        <button value="cancel" class="secondary-button">取消</button>
+        <button id="confirmComputerScanBtn" type="button" class="primary-button">授权并开始扫描</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="privacyDialog" class="modal privacy-modal">
+    <form method="dialog" class="modal-card audit-card">
+      <button class="modal-close" value="cancel" aria-label="关闭">×</button>
+      <div class="privacy-seal"><span class="shield-icon"></span></div>
+      <p class="eyebrow">可核验的边界</p>
+      <h2>隐私审计</h2>
+      <p class="modal-intro">每一次访问都应该有迹可循。这里展示能力边界、确切匿名 payload 与 Agent 运行审计。</p>
+      <div class="audit-tabs">
+        <button class="active" type="button" data-audit-tab="boundary">能力边界</button>
+        <button type="button" data-audit-tab="payload">当前 Payload</button>
+        <button type="button" data-audit-tab="runs">运行审计</button>
+      </div>
+      <section id="boundaryAudit" class="audit-pane">
+        <div id="privacyAudit" class="audit-grid">
+          <div><span>文件写入</span><strong class="safe">永久禁用</strong></div>
+          <div><span>网络上传</span><strong class="safe">默认关闭</strong></div>
+          <div><span>文件内容读取</span><strong class="safe">未授权</strong></div>
+          <div><span>元数据观察</span><strong>仅授权目录</strong></div>
+        </div>
+      </section>
+      <section id="payloadAudit" class="audit-pane" hidden>
+        <pre id="privacyPayload" class="payload-code">尚无可展示的 payload</pre>
+      </section>
+      <section id="runsAudit" class="audit-pane" hidden>
+        <div id="auditRuns" class="audit-runs"><p class="quiet">尚无 Agent 运行记录</p></div>
+      </section>
+      <div class="audit-foot">
+        <i class="lock-mini"></i>
+        <span>真实路径、文件名、正文、API Key 与 Authorization header 永不进入审计 payload。</span>
+      </div>
+      <button class="wide-button" value="close">审计完成</button>
+    </form>
+  </dialog>
+
+  <dialog id="agentPreviewDialog" class="modal">
+    <form method="dialog" class="modal-card agent-preview-card">
+      <button class="modal-close" value="cancel" aria-label="关闭">×</button>
+      <p class="eyebrow">显式确认</p>
+      <h2>确认 Agent 巡视</h2>
+      <p class="modal-intro">以下是本次将交给模型的确切数据。快照或模型配置变化后，本次确认会自动失效。</p>
+      <div class="payload-meta">
+        <div><span>目标</span><strong id="previewTarget">—</strong></div>
+        <div><span>Payload Hash</span><strong id="previewHash">—</strong></div>
+        <div><span>大小</span><strong id="previewSize">—</strong></div>
+      </div>
+      <pre id="agentPayloadPreview" class="payload-code">正在生成安全预览…</pre>
+      <div class="consent-note">
+        <i class="lock-mini"></i>
+        <span>只允许匿名聚合字段；Agent 没有删除、移动、重命名或写入工具。</span>
+      </div>
+      <div class="modal-actions">
+        <button value="cancel" class="secondary-button">取消</button>
+        <button id="confirmAgentBtn" type="button" class="primary-button">确认并开始巡视</button>
+      </div>
+    </form>
+  </dialog>
+
+  <aside id="agentDrawer" class="agent-drawer" aria-hidden="true" aria-label="Agent 巡视报告">
+    <button id="closeAgentDrawer" class="drawer-close" type="button" aria-label="关闭 Agent 报告">×</button>
+    <p class="eyebrow">巡视现场</p>
+    <div class="agent-run-heading">
+      <h2>生态巡视</h2>
+      <span id="agentRunState" class="run-badge">准备中</span>
+    </div>
+    <div class="run-progress"><i id="agentProgressBar"></i></div>
+    <div id="agentSteps" class="agent-steps"></div>
+    <p id="agentRunError" class="agent-run-error" hidden></p>
+    <section id="agentReport" class="agent-report" hidden>
+      <h3>巡视报告</h3>
+      <div id="agentReportBody"></div>
+      <h3>匿名证据</h3>
+      <div id="agentEvidence" class="evidence-list"></div>
+    </section>
+    <div class="run-metrics">
+      <span>置信度<strong id="agentConfidence">—</strong></span>
+      <span>Token<strong id="agentTokens">—</strong></span>
+      <span>耗时<strong id="agentDuration">—</strong></span>
+    </div>
+    <button id="cancelAgentBtn" class="secondary-button danger-button" type="button" hidden>取消巡视</button>
+  </aside>
+
+  <div id="toastRegion" class="toast-region" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
