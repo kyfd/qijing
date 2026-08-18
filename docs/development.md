@@ -22,15 +22,15 @@ go env GOOS GOARCH GOMOD
 ## 获取代码
 
 ```powershell
-git clone <repository-url> E:\gogogo
-Set-Location E:\gogogo
+git clone https://github.com/kyfd/qijing.git
+Set-Location qijing
 go mod download
 ```
 
-如果代码已位于 `E:\gogogo`：
+如果代码已经在本地：
 
 ```powershell
-Set-Location E:\gogogo
+Set-Location qijing
 go mod download
 ```
 
@@ -245,7 +245,7 @@ Remove-Item -LiteralPath $demo -Recurse -Force
 ## 推荐提交前检查
 
 ```powershell
-Set-Location E:\gogogo
+Set-Location qijing
 
 $unformatted = gofmt -l .
 if ($unformatted) {
