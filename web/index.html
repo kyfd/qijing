@@ -3,13 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0b100e">
+  <meta name="theme-color" content="#070c0a">
   <title>栖境 · 文件生态系统 Agent</title>
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
   <div class="app-shell">
     <header class="command-deck">
+      <div class="deck-lamp" aria-hidden="true"></div>
       <div class="deck-primary">
         <a class="brand" href="#" aria-label="栖境首页">
           <img class="brand-mark" src="assets/appicon.png" width="44" height="44" alt="">
@@ -47,10 +48,10 @@
 
       <div class="deck-secondary">
         <div class="trust-chip" aria-label="安全承诺">
-          <span><i class="eye-mini"></i>只读</span>
-          <span><i class="lock-mini"></i>无改写</span>
-          <span id="networkTrust"><i class="cloud-mini"></i>模型联网关闭</span>
-          <span id="providerTrust" class="trust-note">本地规则 Agent</span>
+          <span class="seal-chip"><i class="eye-mini"></i>只读</span>
+          <span class="seal-chip"><i class="lock-mini"></i>无改写</span>
+          <span id="networkTrust" class="seal-chip"><i class="cloud-mini"></i>模型联网关闭</span>
+          <span id="providerTrust" class="trust-note seal-chip soft">本地规则 Agent</span>
         </div>
         <div class="deck-status">
           <span id="lastScan">尚未扫描</span>
@@ -96,6 +97,7 @@
           </div>
 
           <div id="canvasStage" class="canvas-stage">
+            <div class="glass-frame" aria-hidden="true"></div>
             <canvas id="ecosystemCanvas" aria-label="可拖拽缩放的文件生态图"></canvas>
             <div class="canvas-hint"><span class="mouse-icon"></span>拖拽漫游 · 滚轮缩放 · 点击探索</div>
             <div class="zoom-controls" aria-label="地图缩放控件">
@@ -110,8 +112,8 @@
                 <img class="empty-mark" src="assets/appicon.png" width="96" height="96" alt="">
               </div>
               <p class="eyebrow">一片尚未被观察的土地</p>
-              <h2>让文件长成一座生态系统</h2>
-              <p>授权一个根目录后，栖境会在本地只读分析文件的大小、活跃度与重复关系。</p>
+              <h2>推开这扇窗，让文件长成栖境</h2>
+              <p>授权一个根目录后，栖境会在本地只读分析文件的大小、活跃度与重复关系——只看，不动。</p>
               <div class="empty-actions">
                 <button id="emptyRootBtn" class="primary-button" type="button">设置观察根目录</button>
                 <button id="demoBtn" class="text-button" type="button">先看看演示生态 <span>→</span></button>
@@ -125,11 +127,13 @@
               <span><strong>0 B</strong> 已观察</span>
               <span><strong>0</strong> 个建议</span>
             </div>
-            <p>永不删除、移动、重命名或写入源文件</p>
+            <p class="promise-line"><i class="lock-mini" aria-hidden="true"></i>永不删除、移动、重命名或写入源文件</p>
           </footer>
         </section>
 
         <aside class="insights-panel" aria-label="生态简报">
+          <div class="journal-binding" aria-hidden="true"></div>
+          <div class="journal-margin" aria-hidden="true"></div>
           <div class="panel-title">
             <div>
               <p class="eyebrow">野外手记</p>

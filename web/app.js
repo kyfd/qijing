@@ -206,7 +206,7 @@
   function updateTrustStrip() {
     const local = state.model.provider_type === 'local';
     $('#networkTrust').innerHTML = `<i class="cloud-mini"></i>${state.model.network_enabled ? '模型联网开启' : '模型联网关闭'}`;
-    $('#networkTrust').style.color = state.model.network_enabled ? '#e0b46a' : '';
+    $('#networkTrust').classList.toggle('online', Boolean(state.model.network_enabled));
     $('#providerTrust').textContent = local ? '本地模型 · 数据不离机' : (state.model.model ? `云端模型 · ${state.model.model}` : '云端模型未配置');
     $('.agent-note p').innerHTML = state.model.network_enabled && !local ? '<strong>云端 Agent 已由你启用</strong><br>仅在逐次确认后发送匿名 payload。' : (local ? '<strong>本地模型待命</strong><br>Payload 仍会在运行前由你确认。' : '<strong>Agent 正在本地待命</strong><br>联网关闭，不会向外部模型发送数据。');
   }
