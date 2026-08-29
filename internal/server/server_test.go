@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -338,8 +339,17 @@ func TestAgentHTTPIntegrationWithKeylessLocalModel(t *testing.T) {
 		} `json:"steps"`
 	}
 	decodeResponse(t, auditsResponse, &audits)
-	if len(audits.Steps) != 1 || audits.Steps[0].Kind != "request" || audits.Steps[0].Name != "model" || audits.Steps[0].Detail != modelServer.URL {
-		t.Fatalf("audits = %#v", audits.Steps)
+	// The audit trail feeds the privacy panel, so a completed run must record
+	// both the outbound call and its return, and the request step must name the
+	// exact endpoint that was contacted.
+	if len(audits.Steps) != 2 {
+		t.Fatalf("audits = %#v, want request and response steps", audits.Steps)
+	}
+	if audits.Steps[0].Kind != "request" || !strings.Contains(audits.Steps[0].Detail, modelServer.URL) {
+		t.Fatalf("request audit = %#v, want detail naming %s", audits.Steps[0], modelServer.URL)
+	}
+	if audits.Steps[1].Kind != "response" {
+		t.Fatalf("response audit = %#v", audits.Steps[1])
 	}
 
 	modelMu.Lock()
