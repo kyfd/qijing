@@ -5,7 +5,7 @@
   const canvas = $('#ecosystemCanvas');
   const stage = $('#canvasStage');
   const ctx = canvas.getContext('2d');
-  const state = { token: '', nodes: [], roots: [], drives: [], recommendations: [], view: { x: 0, y: 0, scale: 1 }, dragging: false, moved: false, last: null, hover: null, demo: false, scanning: false, cancelling: false, statusTimer: 0, scanProgress: { startedAt: 0, failures: 0, last: null, taskId: '' }, model: { provider_type: 'cloud', base_url: '', model: '', network_enabled: false, has_api_key: false }, agent: { preview: null, runId: '', running: false, timer: 0, startedAt: 0, lastPayload: null, audits: [] }, recycle: { candidates: [], selected: new Set(), preview: null, busy: false } };
+  const state = { token: '', nodes: [], allNodes: [], expanded: new Set(), roots: [], drives: [], recommendations: [], view: { x: 0, y: 0, scale: 1 }, dragging: false, moved: false, last: null, hover: null, demo: false, scanning: false, cancelling: false, statusTimer: 0, scanProgress: { startedAt: 0, failures: 0, last: null, taskId: '' }, model: { provider_type: 'cloud', base_url: '', model: '', network_enabled: false, has_api_key: false }, agent: { preview: null, runId: '', running: false, timer: 0, startedAt: 0, lastPayload: null, audits: [] }, recycle: { candidates: [], selected: new Set(), preview: null, busy: false } };
   const zones = {
     active: { name: '活跃森林', color: '#6fd48c', description: '近期频繁生长与访问的文件' },
     seedlings: { name: '幼苗区', color: '#c6e56a', description: '新近出现、仍在成长的文件' },
@@ -42,17 +42,66 @@
     const zoneKey = node.zone || node.region || node.category || 'active';
     return { id: node.id ?? String(index), name: node.name || node.label || '未命名节点', path: node.path || '', size: Number(node.size ?? node.bytes ?? 0), health: Number(node.health ?? node.score ?? 60), zone: zones[zoneKey] ? zoneKey : 'active', x: 0, y: 0, r: 0, modified: node.modified || node.last_modified || '未知', kind: node.kind || node.type || '文件' };
   }
+  // A real drive has a long tail of tiny files. Drawn individually they become
+  // hundreds of identical specks — visually noisy and, packed together, an
+  // unpleasant clustered texture. Collapse each zone's tail into one node the
+  // user can open and expand, so nothing is hidden but the map stays readable.
+  const AGGREGATE_MIN_MEMBERS = 6;
+  function aggregateNodes(all) {
+    if (!all.length) return all;
+    const largest = Math.max(...all.map(n => n.size), 1);
+    const threshold = largest * 0.005;
+    const groups = new Map();
+    for (const node of all) {
+      if (!groups.has(node.zone)) groups.set(node.zone, []);
+      groups.get(node.zone).push(node);
+    }
+    const out = [];
+    for (const [zone, members] of groups) {
+      const key = `agg:${zone}`;
+      const small = members.filter(n => n.size < threshold);
+      if (small.length < AGGREGATE_MIN_MEMBERS || state.expanded.has(key)) { out.push(...members); continue; }
+      out.push(...members.filter(n => n.size >= threshold));
+      const bytes = small.reduce((s, n) => s + n.size, 0);
+      out.push({
+        id: key, aggregate: true, members: small,
+        name: `${small.length} 个小文件`, path: '',
+        size: bytes, health: small.reduce((s, n) => s + n.health, 0) / small.length,
+        zone, x: 0, y: 0, r: 0, modified: '—', kind: '聚合'
+      });
+    }
+    return out;
+  }
+  function applyNodes(all) {
+    state.allNodes = all;
+    state.nodes = aggregateNodes(all);
+    layoutNodes(state.nodes);
+  }
+  function expandAggregate(key) {
+    state.expanded.add(key);
+    state.nodes = aggregateNodes(state.allNodes);
+    layoutNodes(state.nodes);
+    fitView();
+    draw();
+  }
   // Sizes are areas, not radii: a file twice as large must look twice as big.
   // The old formula bottomed out at a floor for anything under ~100 MB, which
   // flattened every file into the same bead.
   function layoutNodes(nodes) {
     if (!nodes.length) return;
     const largest = Math.max(...nodes.map(n => n.size), 1);
-    // sqrt keeps area proportional to bytes; the exponent softens the extreme
-    // range so a 40 GB outlier cannot shrink everything else into dust.
+    const smallest = Math.max(1, Math.min(...nodes.map(n => Math.max(n.size, 1))));
+    // Real drives span six or more orders of magnitude, so a pure power curve
+    // pins everything under ~1% of the largest file to the floor and produces a
+    // field of identical dots. Blend the area-proportional curve with a log
+    // curve: area still reads as "bigger means heavier", while the log term
+    // keeps small files distinguishable from each other.
+    const logSpan = Math.log(largest / smallest) || 1;
     for (const node of nodes) {
-      const ratio = Math.max(node.size, 1) / largest;
-      node.r = 7 + 62 * Math.pow(ratio, 0.42);
+      const size = Math.max(node.size, 1);
+      const area = Math.pow(size / largest, 0.42);
+      const logged = Math.log(size / smallest) / logSpan;
+      node.r = 7 + 62 * (area * 0.45 + logged * 0.55);
     }
     const groups = new Map();
     for (const node of nodes) {
@@ -94,14 +143,23 @@
   // area, then relax overlaps. Pure spiral placement degenerates into a
   // hexagonal lattice when many circles share a radius; relaxation keeps
   // equal-sized files looking like a natural clump.
+  //
+  // Spacing is deliberately loose and uneven. A uniform minimum gap packs
+  // equal-sized circles into a dense honeycomb blob, which reads as unpleasant
+  // clustered-hole texture rather than as a living map. Per-node breathing room
+  // scales with radius and carries a stable jitter so no two gaps match.
   function packCluster(members) {
     const area = members.reduce((sum, n) => sum + n.r * n.r, 0);
-    const spread = Math.sqrt(area) * 1.6;
+    const spread = Math.sqrt(area) * 2.4;
     members.forEach((node, i) => {
       const a = i * 2.399963;
       const d = spread * Math.sqrt((i + 0.5) / members.length);
-      node.x = Math.cos(a) * d + (hash01(i * 5 + 2) - 0.5) * node.r;
-      node.y = Math.sin(a) * d + (hash01(i * 5 + 8) - 0.5) * node.r;
+      // Jitter proportional to the ring radius breaks the spiral's regularity
+      // at the rim, where a lattice is most visible.
+      const wobble = 0.35 + hash01(i * 7 + 3) * 0.5;
+      node.x = Math.cos(a) * d + (hash01(i * 5 + 2) - 0.5) * (node.r + d * 0.18) * wobble;
+      node.y = Math.sin(a) * d + (hash01(i * 5 + 8) - 0.5) * (node.r + d * 0.18) * wobble;
+      node.pad = 9 + node.r * 0.55 + hash01(i * 11 + 5) * 14;
     });
     for (let pass = 0; pass < 90; pass++) {
       let moved = false;
@@ -110,7 +168,7 @@
         for (let j = i + 1; j < members.length; j++) {
           const b = members[j];
           const dx = b.x - a.x, dy = b.y - a.y;
-          const need = a.r + b.r + 3;
+          const need = a.r + b.r + (a.pad + b.pad) / 2;
           let dist = Math.hypot(dx, dy);
           if (dist >= need) continue;
           if (dist < 0.01) { b.x += 0.4; b.y += 0.3; dist = 0.5; }
@@ -120,8 +178,9 @@
           moved = true;
         }
       }
-      // Gentle pull toward the centre keeps the clump compact as it relaxes.
-      for (const node of members) { node.x *= 0.995; node.y *= 0.995; }
+      // Very light centre pull. Anything stronger re-compacts the clump into
+      // the even-spaced blob the padding above exists to avoid.
+      for (const node of members) { node.x *= 0.9993; node.y *= 0.9993; }
       if (!moved) break;
     }
   }
@@ -138,7 +197,7 @@
         for (let i = 0; i < steps; i++) {
           const a = (i / steps) * Math.PI * 2 + offset;
           const x = Math.cos(a) * dist, y = Math.sin(a) * dist;
-          if (placed.every(p => Math.hypot(x - p.cx, y - p.cy) >= p.radius + cluster.radius + 16)) { best = { x, y }; break; }
+          if (placed.every(p => Math.hypot(x - p.cx, y - p.cy) >= p.radius + cluster.radius + 54)) { best = { x, y }; break; }
         }
       }
       cluster.cx = best ? best.x : 0;
@@ -350,8 +409,8 @@
   async function loadMap() {
     const data = await adapter.map();
     const raw = Array.isArray(data) ? data : (data.nodes || data.items || []);
-    state.nodes = raw.map(normalizeNode);
-    layoutNodes(state.nodes);
+    state.expanded.clear();
+    applyNodes(raw.map(normalizeNode));
     state.recommendations = data.recommendations || [];
     renderEmpty(!state.nodes.length);
     updateStats(data.stats || {});
@@ -361,15 +420,15 @@
   }
   function renderEmpty(show) { $('#emptyState').hidden = !show; if (show) stopAnim(); else ensureAnim(); }
   function updateStats(stats = {}) {
-    const count = stats.files ?? stats.count ?? state.nodes.length;
-    const bytes = stats.bytes ?? stats.total_bytes ?? state.nodes.reduce((s,n) => s + n.size, 0);
+    const count = stats.files ?? stats.count ?? state.allNodes.length;
+    const bytes = stats.bytes ?? stats.total_bytes ?? state.allNodes.reduce((s,n) => s + n.size, 0);
     const recs = stats.recommendations ?? state.recommendations.length;
     $('#mapStats').innerHTML = `<span class="stat-item"><strong>${Number(count).toLocaleString('zh-CN')}</strong> 个文件</span><span class="stat-item"><strong>${formatBytes(bytes)}</strong> 已观察</span><span class="stat-item"><strong>${recs}</strong> 个建议</span>`;
   }
   function loadDemo(data) {
     const raw = data && (data.nodes || data.items);
-    state.nodes = (raw?.length ? raw : demoNodes).map(normalizeNode);
-    layoutNodes(state.nodes);
+    state.expanded.clear();
+    applyNodes((raw?.length ? raw : demoNodes).map(normalizeNode));
     state.demo = true; state.recommendations = [{node_id:'n3'},{node_id:'n6'},{node_id:'n11'}];
     $('#lastScan').textContent = '演示生态 · 本地样本';
     $('#connectionState').textContent = '演示模式';
@@ -498,6 +557,9 @@
     ctx.clearRect(0, 0, rect.width, rect.height);
     const ranked = [...state.nodes].sort((a, b) => a.r - b.r);
     const labeled = new Set([...state.nodes].sort((a, b) => b.r - a.r).slice(0, 14).map((n) => String(n.id)));
+    // Aggregates carry a count that explains a chunk of the map, so they are
+    // always named even when small.
+    for (const node of state.nodes) if (node.aggregate) labeled.add(String(node.id));
     if (state.hover) labeled.add(state.hover);
     ranked.forEach((node, index) => drawSpore(node, index));
     // Captions are drawn largest-first and skipped when they would collide, so
@@ -509,7 +571,7 @@
       const index = ranked.indexOf(node);
       if (id !== state.hover && isOccluded(node)) return;
       const s = sporePose(node, index);
-      if (s.r < 16 && !s.hovered) return;
+      if (s.r < 16 && !s.hovered && !node.aggregate) return;
       const box = { x: s.x, y: s.y + s.ry, w: 96, h: 22 };
       if (id !== state.hover && claimed.some(c => Math.abs(c.x - box.x) < (c.w + box.w) / 2 && Math.abs(c.y - box.y) < (c.h + box.h) / 2)) return;
       claimed.push(box);
@@ -595,6 +657,18 @@
       ctx.stroke();
       ctx.setLineDash([]);
     }
+    // An aggregate stands for many files, so it wears a ring of satellite dots
+    // instead of pretending to be one body.
+    if (node.aggregate && s.r > 10) {
+      const dots = 7;
+      for (let i = 0; i < dots; i++) {
+        const a = (i / dots) * Math.PI * 2 + s.tilt;
+        ctx.beginPath();
+        ctx.arc(s.x + Math.cos(a) * s.rx * 1.24, s.y + Math.sin(a) * s.ry * 1.24, Math.max(1.1, s.r * 0.07), 0, Math.PI * 2);
+        ctx.fillStyle = rgba(lift(rgb, 30), 0.5);
+        ctx.fill();
+      }
+    }
   }
   function drawSporeCaption(node, index) {
     const s = sporePose(node, index);
@@ -651,10 +725,10 @@
   function zoom(factor,cx=stage.clientWidth/2,cy=stage.clientHeight/2){const old=state.view.scale,next=Math.max(.35,Math.min(2.6,old*factor));state.view.x=(state.view.x+stage.clientWidth/2-cx)*(next/old)-stage.clientWidth/2+cx;state.view.y=(state.view.y+stage.clientHeight/2-cy)*(next/old)-stage.clientHeight/2+cy;state.view.scale=next;draw();}
 
   function buildSidebar() {
-    const sums={};state.nodes.forEach(n=>sums[n.zone]=(sums[n.zone]||0)+n.size);
+    const sums={};state.allNodes.forEach(n=>sums[n.zone]=(sums[n.zone]||0)+n.size);
     $('#zoneList').innerHTML=Object.entries(sums).sort((a,b)=>b[1]-a[1]).map(([key,size])=>`<button class="zone-row" data-zone="${key}"><i style="background:${zones[key].color};color:${zones[key].color}"></i><span class="zone-name">${zones[key].name}</span><small class="zone-size">${formatBytes(size)}</small></button>`).join('') || '<p class="quiet">暂无区域数据</p>';
-    const avg=state.nodes.reduce((s,n)=>s+n.health,0)/(state.nodes.length||1);$('#healthScore').textContent=Math.round(avg);
-    const notes=[['giants','△','巨物正在升温','大型文件占据了显著空间'],['clones','∞','发现分身群落','相似副本正在形成聚落'],['endangered','◇','一座濒危岛','稀有文件值得额外关注']].filter(([z])=>state.nodes.some(n=>n.zone===z));
+    const avg=state.allNodes.reduce((s,n)=>s+n.health,0)/(state.allNodes.length||1);$('#healthScore').textContent=Math.round(avg);
+    const notes=[['giants','△','巨物正在升温','大型文件占据了显著空间'],['clones','∞','发现分身群落','相似副本正在形成聚落'],['endangered','◇','一座濒危岛','稀有文件值得额外关注']].filter(([z])=>state.allNodes.some(n=>n.zone===z));
     $('#briefCards').innerHTML=(notes.length?notes:[['active','○','生态状态平稳','暂未发现显著异常']]).slice(0,3).map(([z,s,t,p])=>`<article class="brief-card clickable" data-zone="${z}"><span class="card-symbol">${s}</span><div class="brief-copy"><strong>${t}</strong><p>${p}</p></div></article>`).join('');
   }
   function focusZone(zone) { const group=state.nodes.filter(n=>n.zone===zone);if(!group.length)return;state.view.x=-(group.reduce((s,n)=>s+n.x,0)/group.length)*state.view.scale;state.view.y=-(group.reduce((s,n)=>s+n.y,0)/group.length)*state.view.scale;draw(); }
@@ -666,7 +740,7 @@
   }
   function closeDrawer(){ $('#detailDrawer').classList.remove('open');$('#detailDrawer').setAttribute('aria-hidden','true');$('#backdrop').hidden=true; }
   async function drawerAction(action) {
-    const id=$('#detailDrawer').dataset.id,node=state.nodes.find(n=>String(n.id)===String(id));
+    const id=$('#detailDrawer').dataset.id,node=state.allNodes.find(n=>String(n.id)===String(id));
     if(action==='ignore'){try{if(!state.demo)await adapter.ignoreRecommendation(id);toast('已忽略这条建议');closeDrawer();}catch(error){toast(adapter.mode==='desktop'?desktopError('忽略建议',error):'暂时无法保存忽略状态');}}
     if(action==='later') toast('已留在稍后清单，不会修改文件');
     if(action==='reveal'){try{if(!state.demo)await adapter.revealNode(id);else throw new Error();toast('已请求资源管理器定位');}catch(error){if(node?.path && navigator.clipboard)navigator.clipboard.writeText(node.path).catch(()=>{});toast(adapter.mode==='desktop'?desktopError('在资源管理器中定位',error):'路径已复制，可在资源管理器中打开');}}
@@ -933,11 +1007,11 @@
     return out.join('') || '<p class="quiet">报告为空</p>';
   }
   function toast(message){const el=document.createElement('div');el.className='toast';el.textContent=message;$('#toastRegion').appendChild(el);setTimeout(()=>el.remove(),2800);}
-  function search(query){const q=query.trim().toLowerCase(),box=$('#searchResults');if(!q){box.hidden=true;return;}const found=state.nodes.filter(n=>`${n.name} ${n.path} ${zones[n.zone].name}`.toLowerCase().includes(q)).slice(0,7);box.innerHTML=found.length?found.map(n=>`<button class="search-result" data-node="${escapeHtml(n.id)}"><strong>${escapeHtml(n.name)}</strong><small class="result-path">${escapeHtml(n.path||zones[n.zone].name)} · ${formatBytes(n.size)}</small></button>`).join(''):'<div class="search-result"><small class="result-path">没有找到匹配的生态节点</small></div>';box.hidden=false;}
+  function search(query){const q=query.trim().toLowerCase(),box=$('#searchResults');if(!q){box.hidden=true;return;}const found=state.allNodes.filter(n=>`${n.name} ${n.path} ${zones[n.zone].name}`.toLowerCase().includes(q)).slice(0,7);box.innerHTML=found.length?found.map(n=>`<button class="search-result" data-node="${escapeHtml(n.id)}"><strong>${escapeHtml(n.name)}</strong><small class="result-path">${escapeHtml(n.path||zones[n.zone].name)} · ${formatBytes(n.size)}</small></button>`).join(''):'<div class="search-result"><small class="result-path">没有找到匹配的生态节点</small></div>';box.hidden=false;}
 
   canvas.addEventListener('pointerdown',e=>{state.dragging=true;state.moved=false;state.last={x:e.clientX,y:e.clientY};canvas.setPointerCapture(e.pointerId);canvas.classList.add('dragging');});
-  canvas.addEventListener('pointermove',e=>{if(state.dragging){const dx=e.clientX-state.last.x,dy=e.clientY-state.last.y;if(Math.abs(dx)+Math.abs(dy)>2)state.moved=true;state.view.x+=dx;state.view.y+=dy;state.last={x:e.clientX,y:e.clientY};draw();return;}const n=hitTest(e.clientX,e.clientY);state.hover=n?String(n.id):null;canvas.style.cursor=n?'pointer':'grab';const tip=$('#mapTooltip');if(n){tip.innerHTML=`<strong>${escapeHtml(n.name)}</strong><span class="tip-meta"><i class="tip-dot" style="background:${zones[n.zone].color}"></i>${zones[n.zone].name} · ${formatBytes(n.size)}</span>`;tip.hidden=false;const r=stage.getBoundingClientRect();tip.style.left=`${Math.min(e.clientX-r.left+14,r.width-220)}px`;tip.style.top=`${Math.min(e.clientY-r.top+14,r.height-72)}px`;}else tip.hidden=true;draw();});
-  canvas.addEventListener('pointerup',e=>{if(!state.moved){const n=hitTest(e.clientX,e.clientY);if(n)openDetail(n);}state.dragging=false;canvas.classList.remove('dragging');});
+  canvas.addEventListener('pointermove',e=>{if(state.dragging){const dx=e.clientX-state.last.x,dy=e.clientY-state.last.y;if(Math.abs(dx)+Math.abs(dy)>2)state.moved=true;state.view.x+=dx;state.view.y+=dy;state.last={x:e.clientX,y:e.clientY};draw();return;}const n=hitTest(e.clientX,e.clientY);state.hover=n?String(n.id):null;canvas.style.cursor=n?'pointer':'grab';const tip=$('#mapTooltip');if(n){tip.innerHTML=`<strong>${escapeHtml(n.name)}</strong><span class="tip-meta"><i class="tip-dot" style="background:${zones[n.zone].color}"></i>${zones[n.zone].name} · ${formatBytes(n.size)}${n.aggregate?' · 点击展开':''}</span>`;tip.hidden=false;const r=stage.getBoundingClientRect();tip.style.left=`${Math.min(e.clientX-r.left+14,r.width-220)}px`;tip.style.top=`${Math.min(e.clientY-r.top+14,r.height-72)}px`;}else tip.hidden=true;draw();});
+  canvas.addEventListener('pointerup',e=>{if(!state.moved){const n=hitTest(e.clientX,e.clientY);if(n){if(n.aggregate)expandAggregate(n.id);else openDetail(n);}}state.dragging=false;canvas.classList.remove('dragging');});
   canvas.addEventListener('pointerleave',()=>{$('#mapTooltip').hidden=true;state.hover=null;draw();});
   canvas.addEventListener('wheel',e=>{e.preventDefault();const r=stage.getBoundingClientRect();zoom(e.deltaY<0?1.12:.89,e.clientX-r.left,e.clientY-r.top);},{passive:false});
   $('#zoomIn').onclick=()=>zoom(1.18);$('#zoomOut').onclick=()=>zoom(.84);$('#resetView').onclick=()=>{fitView();draw();};
@@ -950,7 +1024,7 @@
   $('#recycleList').onchange=e=>{const input=e.target.closest('[data-recycle-index]');if(!input)return;const item=state.recycle.candidates[Number(input.dataset.recycleIndex)];if(!item)return;if(input.checked)state.recycle.selected.add(item.entry_id);else state.recycle.selected.delete(item.entry_id);updateRecycleSummary();};
   $('#zoneList').onclick=e=>{const b=e.target.closest('[data-zone]');if(b)focusZone(b.dataset.zone);};$('#briefCards').onclick=e=>{const b=e.target.closest('[data-zone]');if(b)focusZone(b.dataset.zone);};
   $('.drawer-close').onclick=closeDrawer;$('#backdrop').onclick=()=>{closeDrawer();$('#agentDrawer').classList.remove('open');$('#agentDrawer').setAttribute('aria-hidden','true');};$('#drawerContent').onclick=e=>{const b=e.target.closest('[data-action]');if(b)drawerAction(b.dataset.action);};
-  $('#searchInput').addEventListener('input',e=>search(e.target.value));$('#searchResults').onclick=e=>{const b=e.target.closest('[data-node]');if(!b)return;const n=state.nodes.find(n=>String(n.id)===b.dataset.node);if(n)openDetail(n);$('#searchResults').hidden=true;};
+  $('#searchInput').addEventListener('input',e=>search(e.target.value));$('#searchResults').onclick=e=>{const b=e.target.closest('[data-node]');if(!b)return;const n=state.allNodes.find(n=>String(n.id)===b.dataset.node);if(n){if(!state.nodes.includes(n))expandAggregate(`agg:${n.zone}`);openDetail(n);}$('#searchResults').hidden=true;};
   document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#searchInput').focus();$('#searchInput').select();}if(e.key==='Escape')closeDrawer();});
   new ResizeObserver(resize).observe(stage); bootstrap();
 })();
