@@ -406,8 +406,37 @@ func nodeFromEntry(entry model.Entry, paths bool, index int) NodeDTO {
 	return node
 }
 
+// zonePriority fixes the order in which competing classes decide a node's zone.
+//
+// classify.Apply sorts Entry.Classes alphabetically, so ranging over that slice
+// resolved ties by spelling rather than by meaning: "dormant" sorts before
+// "giant", "orphan" and "rotten", so a 50 GB file untouched for a year landed
+// in 僵尸墓地 instead of 巨物火山. Worse, config.Validate guarantees
+// RottenAge >= DormantAge, so "rotten" always co-occurs with "dormant" and the
+// decay zone was unreachable entirely. Order here is intent, most specific
+// first; "dormant" is the weakest signal and must be considered last.
+var zonePriority = []model.Class{
+	model.ClassGitZombie,
+	model.ClassRotten,
+	model.ClassGiant,
+	model.ClassOrphan,
+	model.ClassSeedling,
+	model.ClassDormant,
+}
+
 func zoneFor(entry model.Entry) (string, int, string) {
-	for _, class := range entry.Classes {
+	has := func(want model.Class) bool {
+		for _, class := range entry.Classes {
+			if class == want {
+				return true
+			}
+		}
+		return false
+	}
+	for _, class := range zonePriority {
+		if !has(class) {
+			continue
+		}
 		switch class {
 		case model.ClassGitZombie:
 			return "zombies", 25, "项目长期停滞；请在资源管理器中自行检查未完成工作。"
@@ -417,10 +446,10 @@ func zoneFor(entry model.Entry) (string, int, string) {
 			return "giants", 45, "它占用了显著空间，仅供你了解。"
 		case model.ClassOrphan:
 			return "downloads", 38, "它具有孤儿文件特征，结论仅基于元数据。"
-		case model.ClassDormant:
-			return "zombies", 42, "它已经较长时间没有变化。"
 		case model.ClassSeedling:
 			return "seedlings", 90, "这是近期出现的新文件。"
+		case model.ClassDormant:
+			return "zombies", 42, "它已经较长时间没有变化。"
 		}
 	}
 	return "active", 82, "近期仍有变化，生态状态活跃。"

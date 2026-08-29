@@ -8,11 +8,44 @@ import (
 	"testing"
 	"time"
 
+	"fileecosystem/internal/classify"
 	"fileecosystem/internal/config"
 	"fileecosystem/internal/model"
 	"fileecosystem/internal/scanner"
 	"fileecosystem/internal/store"
 )
+
+// classify.Apply sorts Entry.Classes alphabetically, so zoneFor must not let
+// that ordering decide which class wins. "dormant" sorts before "giant",
+// "orphan" and "rotten" and used to shadow all three.
+func TestZoneForPrefersSpecificClassOverDormant(t *testing.T) {
+	cfg := config.Default()
+	now := time.Now()
+	old := now.Add(-400 * 24 * time.Hour)
+	ancient := now.Add(-800 * 24 * time.Hour)
+
+	cases := []struct {
+		name  string
+		entry model.Entry
+		zone  string
+	}{
+		{"large and long untouched belongs to giants", model.Entry{Kind: model.KindFile, Size: 2 << 30, ModTime: old}, "giants"},
+		{"stale temp file belongs to decay", model.Entry{Kind: model.KindFile, Extension: ".tmp", Size: 1024, ModTime: ancient}, "decay"},
+		{"orphan extension outranks dormancy", model.Entry{Kind: model.KindFile, Extension: ".bak", Size: 1024, ModTime: old}, "downloads"},
+		{"plain old file stays dormant", model.Entry{Kind: model.KindFile, Size: 1024, ModTime: old}, "zombies"},
+		{"recent file is active", model.Entry{Kind: model.KindFile, Size: 1024, ModTime: now.Add(-30 * 24 * time.Hour)}, "active"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entries := []model.Entry{tc.entry}
+			classify.Apply(entries, now, cfg)
+			zone, _, _ := zoneFor(entries[0])
+			if zone != tc.zone {
+				t.Fatalf("zone = %q, want %q (classes %v)", zone, tc.zone, entries[0].Classes)
+			}
+		})
+	}
+}
 
 func TestAuthorizeRootsIsAtomicAndReportsInvalidPaths(t *testing.T) {
 	service, err := New(Options{DataDir: t.TempDir()})
