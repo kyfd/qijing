@@ -40,8 +40,111 @@
   }
   function normalizeNode(node, index) {
     const zoneKey = node.zone || node.region || node.category || 'active';
-    const angle = index * 2.399, distance = 70 + Math.sqrt(index) * 65;
-    return { id: node.id ?? String(index), name: node.name || node.label || '未命名节点', path: node.path || '', size: Number(node.size ?? node.bytes ?? 0), health: Number(node.health ?? node.score ?? 60), zone: zones[zoneKey] ? zoneKey : 'active', x: Number.isFinite(node.x) ? node.x : Math.cos(angle) * distance, y: Number.isFinite(node.y) ? node.y : Math.sin(angle) * distance, r: Number.isFinite(Number(node.r)) ? Math.max(22, Number(node.r) * 1.12) : Math.max(22, Math.min(128, 20 + Math.sqrt(Number(node.size ?? node.bytes ?? 0) / 9e6))), modified: node.modified || node.last_modified || '未知', kind: node.kind || node.type || '文件' };
+    return { id: node.id ?? String(index), name: node.name || node.label || '未命名节点', path: node.path || '', size: Number(node.size ?? node.bytes ?? 0), health: Number(node.health ?? node.score ?? 60), zone: zones[zoneKey] ? zoneKey : 'active', x: 0, y: 0, r: 0, modified: node.modified || node.last_modified || '未知', kind: node.kind || node.type || '文件' };
+  }
+  // Sizes are areas, not radii: a file twice as large must look twice as big.
+  // The old formula bottomed out at a floor for anything under ~100 MB, which
+  // flattened every file into the same bead.
+  function layoutNodes(nodes) {
+    if (!nodes.length) return;
+    const largest = Math.max(...nodes.map(n => n.size), 1);
+    // sqrt keeps area proportional to bytes; the exponent softens the extreme
+    // range so a 40 GB outlier cannot shrink everything else into dust.
+    for (const node of nodes) {
+      const ratio = Math.max(node.size, 1) / largest;
+      node.r = 7 + 62 * Math.pow(ratio, 0.42);
+    }
+    const groups = new Map();
+    for (const node of nodes) {
+      if (!groups.has(node.zone)) groups.set(node.zone, []);
+      groups.get(node.zone).push(node);
+    }
+    // Lay each zone out as its own cluster, then place the clusters around the
+    // origin by weight so heavy regions sit near the centre of the map.
+    const clusters = [...groups.entries()].map(([zone, members]) => {
+      members.sort((a, b) => b.r - a.r);
+      packCluster(members);
+      const radius = Math.max(...members.map(m => Math.hypot(m.x, m.y) + m.r), 1);
+      return { zone, members, radius, weight: members.reduce((s, m) => s + m.size, 0) };
+    }).sort((a, b) => b.weight - a.weight);
+    placeClusters(clusters);
+    for (const cluster of clusters) {
+      for (const member of cluster.members) { member.x += cluster.cx; member.y += cluster.cy; }
+    }
+    // Recentre on the bounding box so fitView can actually fill the stage
+    // instead of leaving the whole field drifting into one corner.
+    const minX = Math.min(...nodes.map(n => n.x - n.r)), maxX = Math.max(...nodes.map(n => n.x + n.r));
+    const minY = Math.min(...nodes.map(n => n.y - n.r)), maxY = Math.max(...nodes.map(n => n.y + n.r));
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    for (const node of nodes) { node.x -= cx; node.y -= cy; }
+    // The stage is a wide letterbox but a packed field is round, so a circular
+    // layout wastes the sides. Stretch toward the viewport aspect, then
+    // recentre again so the result sits squarely in the frame.
+    const aspect = Math.max(1, (stage.clientWidth || 1) / Math.max(1, stage.clientHeight || 1));
+    if (aspect > 1.25 && nodes.length > 1) {
+      const stretch = Math.min(2.1, aspect / 1.2);
+      for (const node of nodes) node.x *= stretch;
+      const x0 = Math.min(...nodes.map(n => n.x - n.r)), x1 = Math.max(...nodes.map(n => n.x + n.r));
+      const y0 = Math.min(...nodes.map(n => n.y - n.r)), y1 = Math.max(...nodes.map(n => n.y + n.r));
+      const dx = (x0 + x1) / 2, dy = (y0 + y1) / 2;
+      for (const node of nodes) { node.x -= dx; node.y -= dy; }
+    }
+  }
+  // Seed each circle on a golden-angle spiral sized to the cluster's total
+  // area, then relax overlaps. Pure spiral placement degenerates into a
+  // hexagonal lattice when many circles share a radius; relaxation keeps
+  // equal-sized files looking like a natural clump.
+  function packCluster(members) {
+    const area = members.reduce((sum, n) => sum + n.r * n.r, 0);
+    const spread = Math.sqrt(area) * 1.6;
+    members.forEach((node, i) => {
+      const a = i * 2.399963;
+      const d = spread * Math.sqrt((i + 0.5) / members.length);
+      node.x = Math.cos(a) * d + (hash01(i * 5 + 2) - 0.5) * node.r;
+      node.y = Math.sin(a) * d + (hash01(i * 5 + 8) - 0.5) * node.r;
+    });
+    for (let pass = 0; pass < 90; pass++) {
+      let moved = false;
+      for (let i = 0; i < members.length; i++) {
+        const a = members[i];
+        for (let j = i + 1; j < members.length; j++) {
+          const b = members[j];
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const need = a.r + b.r + 3;
+          let dist = Math.hypot(dx, dy);
+          if (dist >= need) continue;
+          if (dist < 0.01) { b.x += 0.4; b.y += 0.3; dist = 0.5; }
+          const push = (need - dist) / 2;
+          const ux = dx / dist * push, uy = dy / dist * push;
+          a.x -= ux; a.y -= uy; b.x += ux; b.y += uy;
+          moved = true;
+        }
+      }
+      // Gentle pull toward the centre keeps the clump compact as it relaxes.
+      for (const node of members) { node.x *= 0.995; node.y *= 0.995; }
+      if (!moved) break;
+    }
+  }
+  function placeClusters(clusters) {
+    const placed = [];
+    for (let index = 0; index < clusters.length; index++) {
+      const cluster = clusters[index];
+      if (!placed.length) { cluster.cx = 0; cluster.cy = 0; placed.push(cluster); continue; }
+      let best = null;
+      for (let ring = 1; ring < 400 && !best; ring++) {
+        const dist = ring * 5;
+        const steps = Math.max(20, Math.floor(dist / 5));
+        const offset = hash01(index * 29 + ring) * Math.PI * 2;
+        for (let i = 0; i < steps; i++) {
+          const a = (i / steps) * Math.PI * 2 + offset;
+          const x = Math.cos(a) * dist, y = Math.sin(a) * dist;
+          if (placed.every(p => Math.hypot(x - p.cx, y - p.cy) >= p.radius + cluster.radius + 16)) { best = { x, y }; break; }
+        }
+      }
+      cluster.cx = best ? best.x : 0;
+      cluster.cy = best ? best.y : 0;
+      placed.push(cluster);
+    }
   }
   function decodeResult(value) {
     if (typeof value !== 'string') return value ?? {};
@@ -248,6 +351,7 @@
     const data = await adapter.map();
     const raw = Array.isArray(data) ? data : (data.nodes || data.items || []);
     state.nodes = raw.map(normalizeNode);
+    layoutNodes(state.nodes);
     state.recommendations = data.recommendations || [];
     renderEmpty(!state.nodes.length);
     updateStats(data.stats || {});
@@ -265,6 +369,7 @@
   function loadDemo(data) {
     const raw = data && (data.nodes || data.items);
     state.nodes = (raw?.length ? raw : demoNodes).map(normalizeNode);
+    layoutNodes(state.nodes);
     state.demo = true; state.recommendations = [{node_id:'n3'},{node_id:'n6'},{node_id:'n11'}];
     $('#lastScan').textContent = '演示生态 · 本地样本';
     $('#connectionState').textContent = '演示模式';
@@ -371,16 +476,6 @@
     ctx.beginPath();
     ctx.ellipse(s.x, s.y, s.rx, s.ry, s.tilt, 0, Math.PI * 2);
   }
-  function roundRectPath(x, y, w, h, rad) {
-    const r = Math.min(rad, w / 2, h / 2);
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y, x + w, y + h, r);
-    ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.arcTo(x, y + h, x, y, r);
-    ctx.arcTo(x, y, x + w, y, r);
-    ctx.closePath();
-  }
   function ensureAnim() {
     if (state.anim || reduceMotion.matches || !state.nodes.length) return;
     const tick = (now) => {
@@ -402,13 +497,22 @@
     const rect = stage.getBoundingClientRect();
     ctx.clearRect(0, 0, rect.width, rect.height);
     const ranked = [...state.nodes].sort((a, b) => a.r - b.r);
-    const labeled = new Set([...state.nodes].sort((a, b) => b.r - a.r).slice(0, 6).map((n) => String(n.id)));
+    const labeled = new Set([...state.nodes].sort((a, b) => b.r - a.r).slice(0, 14).map((n) => String(n.id)));
     if (state.hover) labeled.add(state.hover);
     ranked.forEach((node, index) => drawSpore(node, index));
-    ranked.forEach((node, index) => {
+    // Captions are drawn largest-first and skipped when they would collide, so
+    // a dense cluster shows a few readable names instead of a pile of mush.
+    const claimed = [];
+    [...state.nodes].sort((a, b) => b.r - a.r).forEach((node) => {
       const id = String(node.id);
       if (!labeled.has(id)) return;
+      const index = ranked.indexOf(node);
       if (id !== state.hover && isOccluded(node)) return;
+      const s = sporePose(node, index);
+      if (s.r < 16 && !s.hovered) return;
+      const box = { x: s.x, y: s.y + s.ry, w: 96, h: 22 };
+      if (id !== state.hover && claimed.some(c => Math.abs(c.x - box.x) < (c.w + box.w) / 2 && Math.abs(c.y - box.y) < (c.h + box.h) / 2)) return;
+      claimed.push(box);
       drawSporeCaption(node, index);
     });
   }
@@ -422,146 +526,85 @@
   }
   function drawSpore(node, index) {
     const s = sporePose(node, index);
-    if (s.r < 2 || s.x + s.r < 0 || s.x - s.r > stage.clientWidth || s.y + s.r < 0 || s.y - s.r > stage.clientHeight) return;
+    if (s.r < 1 || s.x + s.r < 0 || s.x - s.r > stage.clientWidth || s.y + s.r < 0 || s.y - s.r > stage.clientHeight) return;
     const meta = zones[node.zone] || zones.active;
     const rgb = rgbOf(meta.color);
     const health = Math.max(0, Math.min(1, Number(node.health) / 100));
-    const lit = lift(rgb, 55);
     ctx.save();
 
-    const bloomR = s.r * (1.7 + health * 0.25);
-    const bloom = ctx.createRadialGradient(s.x, s.y, s.r * 0.25, s.x, s.y, bloomR);
-    bloom.addColorStop(0, rgba(rgb, (s.hovered ? 0.34 : 0.2) + health * 0.16));
-    bloom.addColorStop(0.45, rgba(rgb, 0.08));
-    bloom.addColorStop(1, rgba(rgb, 0));
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, bloomR, 0, Math.PI * 2);
-    ctx.fillStyle = bloom;
-    ctx.fill();
+    // A soft halo only around meaningful bodies. Tiny specks stay flat so the
+    // map reads as a field of light rather than a tray of glass beads.
+    if (s.r > 9) {
+      const bloomR = s.r * 2.1;
+      const bloom = ctx.createRadialGradient(s.x, s.y, s.r * 0.8, s.x, s.y, bloomR);
+      bloom.addColorStop(0, rgba(rgb, (s.hovered ? 0.2 : 0.11) + health * 0.06));
+      bloom.addColorStop(1, rgba(rgb, 0));
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, bloomR, 0, Math.PI * 2);
+      ctx.fillStyle = bloom;
+      ctx.fill();
+    }
 
-    const body = ctx.createRadialGradient(
-      s.x - s.rx * 0.28, s.y - s.ry * 0.34, s.r * 0.04,
-      s.x + s.rx * 0.06, s.y + s.ry * 0.12, s.r
-    );
-    body.addColorStop(0, rgba(lift(rgb, 70), 0.95));
-    body.addColorStop(0.22, rgba(rgb, 0.78));
-    body.addColorStop(0.62, rgba(dim(rgb, 0.42), 0.82));
-    body.addColorStop(1, rgba(dim(rgb, 0.16), 0.92));
+    // Flat fill with a gentle top-down lift: enough shape to feel alive,
+    // not enough to look like a rendered sphere.
+    const body = ctx.createLinearGradient(s.x, s.y - s.ry, s.x, s.y + s.ry);
+    const base = node.zone === 'zombies' ? dim(rgb, 0.82) : rgb;
+    body.addColorStop(0, rgba(lift(base, 26), s.hovered ? 0.95 : 0.86));
+    body.addColorStop(1, rgba(dim(base, 0.6), s.hovered ? 0.9 : 0.8));
     sporePath(s);
     ctx.fillStyle = body;
     ctx.fill();
 
-    ctx.save();
-    sporePath(s);
-    ctx.clip();
-
-    const nucleusX = s.x + s.rx * (0.08 + s.phase * 0.03);
-    const nucleusY = s.y + s.ry * (0.06 + Math.cos(((state.clock || 0) / 1000) + index) * 0.02);
-    const nucleusR = s.r * (0.2 + health * 0.16);
-    if (s.r > 8) {
-      if (node.zone === 'clones') {
-        [[-0.16, -0.04], [0.18, 0.1]].forEach(([dx, dy], i) => {
-          const nx = s.x + s.rx * dx, ny = s.y + s.ry * dy, nr = nucleusR * (i ? 0.72 : 0.88);
-          const core = ctx.createRadialGradient(nx, ny, 0, nx, ny, nr);
-          core.addColorStop(0, `rgba(230,246,255,${0.55 + health * 0.25})`);
-          core.addColorStop(0.5, rgba(rgb, 0.5));
-          core.addColorStop(1, rgba(rgb, 0));
-          ctx.beginPath(); ctx.arc(nx, ny, nr, 0, Math.PI * 2); ctx.fillStyle = core; ctx.fill();
-        });
-      } else {
-        const core = ctx.createRadialGradient(nucleusX, nucleusY, 0, nucleusX, nucleusY, nucleusR);
-        const coreTint = node.zone === 'giants' ? [255, 210, 160] : node.zone === 'endangered' ? [255, 230, 255] : [255, 255, 220];
-        core.addColorStop(0, `rgba(${coreTint[0]},${coreTint[1]},${coreTint[2]},${0.42 + health * 0.4})`);
-        core.addColorStop(0.45, rgba(rgb, 0.5));
-        core.addColorStop(1, rgba(rgb, 0));
-        ctx.beginPath(); ctx.arc(nucleusX, nucleusY, nucleusR, 0, Math.PI * 2); ctx.fillStyle = core; ctx.fill();
-      }
-    }
-
-    if (node.zone === 'downloads' && s.r > 12) {
-      const silt = ctx.createLinearGradient(s.x, s.y + s.ry * 0.15, s.x, s.y + s.ry);
-      silt.addColorStop(0, 'rgba(224,173,90,0)');
-      silt.addColorStop(1, 'rgba(160,100,36,0.38)');
-      ctx.fillStyle = silt;
-      ctx.fillRect(s.x - s.rx, s.y, s.rx * 2, s.ry);
-    }
-    if (node.zone === 'endangered' && s.r > 16) {
-      ctx.save();
-      ctx.translate(nucleusX, nucleusY);
-      ctx.rotate(0.7);
-      ctx.fillStyle = `rgba(255,236,255,${0.55 + health * 0.25})`;
-      const spark = s.r * 0.09;
+    // Health reads as a quiet inner disc, not a glowing nucleus.
+    if (s.r > 14) {
       ctx.beginPath();
-      ctx.moveTo(0, -spark * 1.8); ctx.lineTo(spark * 0.28, 0); ctx.lineTo(0, spark * 1.8); ctx.lineTo(-spark * 0.28, 0);
-      ctx.closePath(); ctx.fill();
-      ctx.beginPath();
-      ctx.moveTo(-spark * 1.8, 0); ctx.lineTo(0, spark * 0.28); ctx.lineTo(spark * 1.8, 0); ctx.lineTo(0, -spark * 0.28);
-      ctx.closePath(); ctx.fill();
-      ctx.restore();
-    }
-    if (s.r > 22 && node.zone !== 'zombies') {
-      const motes = Math.min(7, 2 + Math.floor(s.r / 16));
-      for (let i = 0; i < motes; i++) {
-        const a = (i * 2.15 + index + (state.clock || 0) / 2400) * 1.13;
-        const rr = s.r * (0.28 + (i % 3) * 0.14);
-        ctx.beginPath();
-        ctx.arc(s.x + Math.cos(a) * rr * 0.9, s.y + Math.sin(a) * rr * (s.ry / Math.max(s.rx, 1)), Math.max(1.1, s.r * 0.018), 0, Math.PI * 2);
-        ctx.fillStyle = rgba(lit, 0.35 + (i % 2) * 0.18);
-        ctx.fill();
-      }
-    }
-
-    if (s.r > 6 && node.zone !== 'zombies') {
-      ctx.beginPath();
-      ctx.ellipse(s.x - s.rx * 0.32, s.y - s.ry * 0.38, s.rx * 0.28, s.ry * 0.13, -0.7, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(255,255,255,${s.hovered ? 0.42 : 0.26})`;
-      ctx.fill();
-      ctx.beginPath();
-      ctx.ellipse(s.x + s.rx * 0.3, s.y + s.ry * 0.34, s.rx * 0.07, s.ry * 0.045, 0.4, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,255,255,0.14)';
+      ctx.ellipse(s.x, s.y, s.rx * (0.3 + health * 0.24), s.ry * (0.3 + health * 0.24), s.tilt, 0, Math.PI * 2);
+      ctx.fillStyle = rgba(lift(base, 70), 0.16 + health * 0.16);
       ctx.fill();
     }
     ctx.restore();
 
     sporePath(s);
-    ctx.strokeStyle = s.hovered ? 'rgba(244,248,236,0.92)' : rgba(lit, node.zone === 'zombies' ? 0.38 : 0.62);
-    ctx.lineWidth = s.hovered ? 2.2 : 1.25;
+    ctx.strokeStyle = s.hovered ? 'rgba(244,248,236,0.9)' : rgba(lift(base, 40), node.zone === 'zombies' ? 0.3 : 0.5);
+    ctx.lineWidth = s.hovered ? 2 : 1;
     ctx.stroke();
 
-    if (s.r > 18) {
+    // Zone signatures, kept to a single stroke each.
+    if (node.zone === 'clones' && s.r > 16) {
       ctx.beginPath();
-      ctx.ellipse(s.x, s.y, s.rx * 0.7, s.ry * 0.7, s.tilt, 0, Math.PI * 2);
-      ctx.strokeStyle = rgba(rgb, 0.2);
-      ctx.lineWidth = 1;
-      ctx.stroke();
-    }
-    if (node.zone === 'clones' && s.r > 14) {
-      ctx.beginPath();
-      ctx.ellipse(s.x, s.y, s.rx * 0.86, s.ry * 0.86, s.tilt, 0, Math.PI * 2);
-      ctx.strokeStyle = rgba(lit, 0.28);
-      ctx.setLineDash([4, 5]);
+      ctx.ellipse(s.x, s.y, s.rx * 0.72, s.ry * 0.72, s.tilt, 0, Math.PI * 2);
+      ctx.strokeStyle = rgba(lift(rgb, 40), 0.3);
+      ctx.setLineDash([3, 4]);
       ctx.lineWidth = 1;
       ctx.stroke();
       ctx.setLineDash([]);
     }
-    if (node.zone === 'decay' && s.r > 14) {
+    if (node.zone === 'decay' && s.r > 16) {
       ctx.beginPath();
-      ctx.ellipse(s.x, s.y, s.rx * 0.97, s.ry * 0.97, s.tilt, 0.4, Math.PI * 1.45);
-      ctx.strokeStyle = rgba(rgb, 0.45);
-      ctx.lineWidth = 1.4;
+      ctx.ellipse(s.x, s.y, s.rx * 0.84, s.ry * 0.84, s.tilt, 0.5, Math.PI * 1.4);
+      ctx.strokeStyle = rgba(rgb, 0.4);
+      ctx.lineWidth = 1.2;
       ctx.stroke();
     }
-    ctx.restore();
+    if (node.zone === 'endangered' && s.r > 18) {
+      ctx.beginPath();
+      ctx.ellipse(s.x, s.y, s.rx * 1.18, s.ry * 1.18, s.tilt, 0, Math.PI * 2);
+      ctx.strokeStyle = rgba(rgb, 0.26);
+      ctx.setLineDash([2, 6]);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
   }
   function drawSporeCaption(node, index) {
     const s = sporePose(node, index);
-    if (s.r < 22 && !s.hovered) return;
-    const showSize = s.hovered || s.r > 36;
-    const fontSize = Math.max(12, Math.min(16, s.r * 0.18));
-    const maxChars = s.r > 52 || s.hovered ? 12 : 7;
+    if (s.r < 16 && !s.hovered) return;
+    const showSize = s.hovered || s.r > 30;
+    const fontSize = Math.max(11, Math.min(15, s.r * 0.3));
+    const maxChars = s.r > 46 || s.hovered ? 14 : 8;
     const label = node.name.length > maxChars ? `${node.name.slice(0, maxChars - 1)}…` : node.name;
     ctx.save();
-    if (s.r >= 26) {
+    if (s.r >= 34) {
       sporePath(s);
       ctx.clip();
       const bandY = s.y + s.ry * 0.18;
@@ -582,28 +625,28 @@
         ctx.fillText(formatBytes(node.size), s.x, s.y + s.ry * 0.64);
       }
     } else {
-      const sizeText = formatBytes(node.size);
-      ctx.font = `600 ${fontSize}px "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif`;
-      const w = ctx.measureText(label).width + 18;
-      const h = fontSize + 12;
-      const x = s.x - w / 2;
-      const y = s.y + s.ry + 6;
-      roundRectPath(x, y, w, h, 8);
-      ctx.fillStyle = 'rgba(12, 20, 16, 0.9)';
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(198, 222, 134, 0.4)';
-      ctx.stroke();
+      // No chip, just text with a soft shadow: a boxed label on every small
+      // node turns the field into a wall of buttons.
       ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#f3f7ef';
-      ctx.fillText(label, s.x, y + h / 2);
+      ctx.textBaseline = 'top';
+      ctx.font = `600 ${fontSize}px "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif`;
+      ctx.shadowColor = 'rgba(4,9,7,0.95)';
+      ctx.shadowBlur = 5;
+      ctx.fillStyle = 'rgba(238,245,232,0.94)';
+      ctx.fillText(label, s.x, s.y + s.ry + 5);
+      if (showSize) {
+        ctx.font = `500 ${Math.max(10, fontSize * 0.8)}px "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif`;
+        ctx.fillStyle = 'rgba(198,222,134,0.86)';
+        ctx.fillText(formatBytes(node.size), s.x, s.y + s.ry + 7 + fontSize);
+      }
+      ctx.shadowBlur = 0;
     }
     ctx.restore();
   }
   function hitTest(clientX, clientY) { const rect=canvas.getBoundingClientRect(), x=clientX-rect.left,y=clientY-rect.top; return [...state.nodes].reverse().find(n=>{const p=screen(n);return Math.hypot(x-p.x,y-p.y)<=p.radius*1.08;}); }
   function fitView() {
     if (!state.nodes.length) return; const maxX=Math.max(...state.nodes.map(n=>Math.abs(n.x)+n.r)), maxY=Math.max(...state.nodes.map(n=>Math.abs(n.y)+n.r));
-    state.view.scale=Math.min(1, Math.max(.42, Math.min((stage.clientWidth-88)/(maxX*2),(stage.clientHeight-72)/(maxY*2)))); state.view.x=0;state.view.y=0;
+    state.view.scale=Math.max(.42, Math.min(2.4, Math.min((stage.clientWidth-88)/(maxX*2),(stage.clientHeight-72)/(maxY*2)))); state.view.x=0;state.view.y=0;
   }
   function zoom(factor,cx=stage.clientWidth/2,cy=stage.clientHeight/2){const old=state.view.scale,next=Math.max(.35,Math.min(2.6,old*factor));state.view.x=(state.view.x+stage.clientWidth/2-cx)*(next/old)-stage.clientWidth/2+cx;state.view.y=(state.view.y+stage.clientHeight/2-cy)*(next/old)-stage.clientHeight/2+cy;state.view.scale=next;draw();}
 
