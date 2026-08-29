@@ -124,6 +124,14 @@ CREATE TABLE IF NOT EXISTS suggestions(id INTEGER PRIMARY KEY AUTOINCREMENT, sca
 		ALTER TABLE scans ADD COLUMN partial INTEGER NOT NULL DEFAULT 0;
 		ALTER TABLE scans ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0;
 		ALTER TABLE scans ADD COLUMN truncation_reason TEXT NOT NULL DEFAULT '';`,
+	// recycled_items deliberately carries no foreign key: the record of what the
+	// user recycled must outlive the snapshot it was observed in.
+	`CREATE TABLE IF NOT EXISTS recycled_items(
+		 id TEXT PRIMARY KEY, scan_id TEXT NOT NULL, entry_id TEXT NOT NULL, path TEXT NOT NULL,
+		 name TEXT NOT NULL, kind TEXT NOT NULL, size INTEGER NOT NULL, root TEXT NOT NULL,
+		 confirmed_at TEXT NOT NULL, recycled_at TEXT NOT NULL, outcome TEXT NOT NULL, error TEXT NOT NULL DEFAULT ''
+		);
+		CREATE INDEX IF NOT EXISTS recycled_items_recycled_at ON recycled_items(recycled_at DESC);`,
 }
 
 func (s *Store) Migrate(ctx context.Context) error {

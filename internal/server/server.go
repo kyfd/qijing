@@ -79,6 +79,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/nodes/{id}", s.node)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/reveal", s.reveal)
 	mux.HandleFunc("POST /api/v1/recommendations/{id}/ignore", s.ignore)
+	mux.HandleFunc("GET /api/v1/recycle/candidates", s.recycleCandidates)
+	mux.HandleFunc("POST /api/v1/recycle/preview", s.previewRecycle)
+	mux.HandleFunc("POST /api/v1/recycle/confirm", s.confirmRecycle)
+	mux.HandleFunc("GET /api/v1/recycle/history", s.recycleHistory)
 	mux.HandleFunc("GET /api/v1/privacy", s.privacy)
 	mux.HandleFunc("POST /api/v1/demo", s.demo)
 	mux.HandleFunc("GET /api/v1/model/profile", s.modelProfile)
@@ -120,7 +124,7 @@ func (s *Server) security(next http.Handler) http.Handler {
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	status := s.app.Status(r.Context())
-	writeJSON(w, map[string]any{"token": s.token, "scanning": status.Scanning, "state": status.State, "scan_id": status.ScanID, "task_result": status.TaskResult, "last_scan": status.LastScan, "last_error": status.LastError, "stats": status.Stats, "readonly": status.ReadOnly, "network": status.Network, "partial": status.Partial, "truncated": status.Truncated, "truncation_reason": status.TruncationCause, "error_count": status.ErrorCount, "progress": status.Progress})
+	writeJSON(w, map[string]any{"token": s.token, "scanning": status.Scanning, "state": status.State, "scan_id": status.ScanID, "task_result": status.TaskResult, "last_scan": status.LastScan, "last_error": status.LastError, "stats": status.Stats, "scan_readonly": status.ScanReadOnly, "network": status.Network, "partial": status.Partial, "truncated": status.Truncated, "truncation_reason": status.TruncationCause, "error_count": status.ErrorCount, "progress": status.Progress})
 }
 func (s *Server) roots(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.app.Roots(r.Context()))
@@ -245,6 +249,58 @@ func (s *Server) ignore(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) privacy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.app.Privacy(r.Context()))
+}
+
+func (s *Server) recycleCandidates(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.app.RecycleCandidates(r.Context()))
+}
+
+func (s *Server) previewRecycle(w http.ResponseWriter, r *http.Request) {
+	var req application.RecyclePreviewRequestDTO
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	result, err := s.app.PreviewRecycle(r.Context(), req)
+	if err != nil {
+		code := http.StatusBadRequest
+		switch {
+		case errors.Is(err, application.ErrNodeNotFound):
+			code = http.StatusNotFound
+		case errors.Is(err, application.ErrUnauthorized):
+			code = http.StatusForbidden
+		case errors.Is(err, application.ErrNoScan):
+			code = http.StatusConflict
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	writeJSON(w, result)
+}
+
+func (s *Server) confirmRecycle(w http.ResponseWriter, r *http.Request) {
+	var req application.RecycleConfirmRequestDTO
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	result, err := s.app.ConfirmRecycle(r.Context(), req)
+	if errors.Is(err, application.ErrRecycleConfirmation) {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, result)
+}
+
+func (s *Server) recycleHistory(w http.ResponseWriter, r *http.Request) {
+	result, err := s.app.RecycleHistory(r.Context(), 100)
+	if err != nil {
+		http.Error(w, "cannot read recycle history", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, result)
 }
 func (s *Server) demo(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.app.Demo(r.Context())) }
 

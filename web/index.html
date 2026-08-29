@@ -36,6 +36,10 @@
             <span class="gear-icon" aria-hidden="true"></span>
             <span class="button-label">设置</span>
           </button>
+          <button id="recycleBtn" class="deck-button" type="button" aria-label="整理回收" title="整理回收">
+            <span class="basket-icon" aria-hidden="true"></span>
+            <span class="button-label">整理</span>
+          </button>
           <button id="agentPatrolBtn" class="deck-button deck-agent" type="button" aria-label="让 Agent 巡视" title="让 Agent 巡视">
             <span class="agent-avatar" aria-hidden="true">栖</span>
             <span class="button-label">巡视</span>
@@ -48,8 +52,8 @@
 
       <div class="deck-secondary">
         <div class="trust-chip" aria-label="安全承诺">
-          <span class="seal-chip"><i class="eye-mini"></i>只读</span>
-          <span class="seal-chip"><i class="lock-mini"></i>无改写</span>
+          <span class="seal-chip"><i class="eye-mini"></i>观察只读</span>
+          <span class="seal-chip"><i class="lock-mini"></i>回收可还原</span>
           <span id="networkTrust" class="seal-chip"><i class="cloud-mini"></i>模型联网关闭</span>
           <span id="providerTrust" class="trust-note seal-chip soft">本地规则 Agent</span>
         </div>
@@ -113,7 +117,7 @@
               </div>
               <p class="eyebrow">一片尚未被观察的土地</p>
               <h2>推开这扇窗，让文件长成栖境</h2>
-              <p>授权一个根目录后，栖境会在本地只读分析文件的大小、活跃度与重复关系——只看，不动。</p>
+              <p>授权一个根目录后，栖境会在本地只读分析文件的大小、活跃度与重复关系——先看，再由你决定动不动。</p>
               <div class="empty-actions">
                 <button id="emptyRootBtn" class="primary-button" type="button">设置观察根目录</button>
                 <button id="demoBtn" class="text-button" type="button">先看看演示生态 <span>→</span></button>
@@ -127,7 +131,7 @@
               <span><strong>0 B</strong> 已观察</span>
               <span><strong>0</strong> 个建议</span>
             </div>
-            <p class="promise-line"><i class="lock-mini" aria-hidden="true"></i>永不删除、移动、重命名或写入源文件</p>
+            <p class="promise-line"><i class="lock-mini" aria-hidden="true"></i>未经你逐项确认，永不触碰源文件；确认后也只送进回收站</p>
           </footer>
         </section>
 
@@ -194,7 +198,7 @@
         <button type="button" data-settings-tab="agent">Agent 模型</button>
       </div>
       <section id="rootsSettings" class="settings-pane">
-        <p class="modal-intro">栖境只读取元数据与本地路径，不读取文件内容，也不具备修改权限。</p>
+        <p class="modal-intro">栖境只读取元数据与本地路径，不读取文件内容。整理功能只能把你逐项确认过的文件送进 Windows 回收站，随时可还原。</p>
         <div id="rootsList" class="roots-list"></div>
         <div class="native-picker-row">
           <button id="chooseRootBtn" class="native-picker-button" type="button"><span aria-hidden="true">▣</span> 选择文件夹</button>
@@ -260,6 +264,50 @@
     </form>
   </dialog>
 
+  <dialog id="recycleDialog" class="modal recycle-modal">
+    <form method="dialog" class="modal-card recycle-card">
+      <button class="modal-close" value="cancel" aria-label="关闭">×</button>
+      <p class="eyebrow">逐项确认</p>
+      <h2>整理与回收</h2>
+      <p class="modal-intro">这些文件符合临时、缓存或残留的特征。勾选后仍会再确认一次，最终只会移入 Windows 回收站——随时可以还原。</p>
+      <div id="recycleList" class="recycle-list"><p class="quiet">正在读取本地观察结果…</p></div>
+      <div class="recycle-foot">
+        <span id="recycleSummary" class="recycle-summary">尚未选择任何文件</span>
+        <button id="recycleReviewBtn" type="button" class="primary-button" disabled>查看将要回收的文件</button>
+      </div>
+      <details class="recycle-history-wrap">
+        <summary>回收记录</summary>
+        <div id="recycleHistory" class="recycle-history"><p class="quiet">尚未回收过任何文件</p></div>
+      </details>
+      <div class="audit-foot">
+        <i class="lock-mini"></i>
+        <span>栖境从不永久删除、移动或重命名文件；回收记录永久保存在本机，即使快照被清除。</span>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="recycleConfirmDialog" class="modal">
+    <form method="dialog" class="modal-card recycle-confirm-card">
+      <button class="modal-close" value="cancel" aria-label="关闭">×</button>
+      <p class="eyebrow">最后一次确认</p>
+      <h2>确认移入回收站</h2>
+      <p class="modal-intro">以下文件将被送进 Windows 回收站。若文件在预览之后发生变化，本次确认会自动失效。</p>
+      <div class="payload-meta">
+        <div><span>范围</span><strong id="recycleConfirmSummary">—</strong></div>
+        <div><span>选择指纹</span><strong id="recycleConfirmHash">—</strong></div>
+      </div>
+      <div id="recycleConfirmList" class="recycle-confirm-list"></div>
+      <div class="consent-note">
+        <i class="lock-mini"></i>
+        <span>只做「移入回收站」这一个动作；不清空回收站，也不绕过它。</span>
+      </div>
+      <div class="modal-actions">
+        <button value="cancel" class="secondary-button">取消</button>
+        <button id="confirmRecycleBtn" type="button" class="primary-button">确认移入回收站</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="privacyDialog" class="modal privacy-modal">
     <form method="dialog" class="modal-card audit-card">
       <button class="modal-close" value="cancel" aria-label="关闭">×</button>
@@ -274,7 +322,10 @@
       </div>
       <section id="boundaryAudit" class="audit-pane">
         <div id="privacyAudit" class="audit-grid">
-          <div><span>文件写入</span><strong class="safe">永久禁用</strong></div>
+          <div><span>文件内容改写</span><strong class="safe">禁用</strong></div>
+          <div><span>永久删除</span><strong class="safe">禁用</strong></div>
+          <div><span>移动或重命名</span><strong class="safe">禁用</strong></div>
+          <div><span>移入回收站</span><strong>仅逐项确认后</strong></div>
           <div><span>网络上传</span><strong class="safe">默认关闭</strong></div>
           <div><span>文件内容读取</span><strong class="safe">未授权</strong></div>
           <div><span>元数据观察</span><strong>仅授权目录</strong></div>

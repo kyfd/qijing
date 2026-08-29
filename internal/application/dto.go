@@ -94,7 +94,9 @@ type StatusDTO struct {
 	LastScan        string           `json:"last_scan"`
 	LastError       string           `json:"last_error,omitempty"`
 	Stats           StatsDTO         `json:"stats"`
-	ReadOnly        bool             `json:"readonly"`
+	// ScanReadOnly reports the scan pipeline's guarantee only. Recycling runs
+	// on a separate, individually confirmed endpoint.
+	ScanReadOnly    bool             `json:"scan_readonly"`
 	Network         bool             `json:"network"`
 	Partial         bool             `json:"partial"`
 	Truncated       bool             `json:"truncated"`
@@ -137,14 +139,20 @@ type RevealDTO struct {
 	OK bool `json:"ok"`
 }
 
+// CapabilitiesDTO is rendered verbatim in the privacy audit panel. A false
+// value renders as "禁用"; every capability the application actually has must
+// carry an explicit, non-false description instead of relying on a zero value.
 type CapabilitiesDTO struct {
-	FileWrite           bool `json:"文件写入"`
-	DeleteMoveRename    bool `json:"删除移动重命名"`
-	ArbitraryShell      bool `json:"任意 Shell"`
-	NetworkUpload       bool `json:"网络上传"`
-	FileContentRead     bool `json:"文件内容读取"`
-	LocalHash           bool `json:"本地哈希"`
-	AuthorizedRootCount int  `json:"授权根目录数"`
+	FileContentRewrite  bool   `json:"文件内容改写"`
+	PermanentDelete     bool   `json:"永久删除"`
+	MoveOrRename        bool   `json:"移动或重命名"`
+	ArbitraryShell      bool   `json:"任意 Shell"`
+	NetworkUpload       bool   `json:"网络上传"`
+	FileContentRead     bool   `json:"文件内容读取"`
+	RecycleBin          string `json:"移入回收站"`
+	LocalHash           bool   `json:"本地哈希"`
+	AuthorizedRootCount int    `json:"授权根目录数"`
+	RecycledItemCount   int    `json:"已移入回收站条目"`
 }
 
 type PrivacyDTO struct {

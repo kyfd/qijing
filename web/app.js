@@ -5,7 +5,7 @@
   const canvas = $('#ecosystemCanvas');
   const stage = $('#canvasStage');
   const ctx = canvas.getContext('2d');
-  const state = { token: '', nodes: [], roots: [], drives: [], recommendations: [], view: { x: 0, y: 0, scale: 1 }, dragging: false, moved: false, last: null, hover: null, demo: false, scanning: false, cancelling: false, statusTimer: 0, scanProgress: { startedAt: 0, failures: 0, last: null, taskId: '' }, model: { provider_type: 'cloud', base_url: '', model: '', network_enabled: false, has_api_key: false }, agent: { preview: null, runId: '', running: false, timer: 0, startedAt: 0, lastPayload: null, audits: [] } };
+  const state = { token: '', nodes: [], roots: [], drives: [], recommendations: [], view: { x: 0, y: 0, scale: 1 }, dragging: false, moved: false, last: null, hover: null, demo: false, scanning: false, cancelling: false, statusTimer: 0, scanProgress: { startedAt: 0, failures: 0, last: null, taskId: '' }, model: { provider_type: 'cloud', base_url: '', model: '', network_enabled: false, has_api_key: false }, agent: { preview: null, runId: '', running: false, timer: 0, startedAt: 0, lastPayload: null, audits: [] }, recycle: { candidates: [], selected: new Set(), preview: null, busy: false } };
   const zones = {
     active: { name: '活跃森林', color: '#6fd48c', description: '近期频繁生长与访问的文件' },
     seedlings: { name: '幼苗区', color: '#c6e56a', description: '新近出现、仍在成长的文件' },
@@ -97,6 +97,10 @@
       revealNode: (id) => request(`/nodes/${encodeURIComponent(id)}/reveal`, { method: 'POST' }),
       ignoreRecommendation: (id) => request(`/recommendations/${encodeURIComponent(id)}/ignore`, { method: 'POST' }),
       privacy: () => request('/privacy'),
+      recycleCandidates: () => request('/recycle/candidates'),
+      previewRecycle: (entry_ids) => request('/recycle/preview', { method: 'POST', body: { entry_ids } }),
+      confirmRecycle: (selection_hash, confirmation_token) => request('/recycle/confirm', { method: 'POST', body: { selection_hash, confirmation_token } }),
+      recycleHistory: () => request('/recycle/history'),
       demo: () => request('/demo', { method: 'POST' }),
       getModelProfile: () => request('/model/profile'),
       saveModelProfile: (profile) => request('/model/profile', { method: 'PUT', body: profile }),
@@ -768,6 +772,91 @@
     const evidence = report.evidence || report.tools_called || data.evidence || []; $('#agentEvidence').innerHTML = evidence.length ? evidence.map(item=>`<div class="evidence-item">${escapeHtml(typeof item==='string'?item:(item.summary||item.description||JSON.stringify(item)))}</div>`).join('') : '<p class="quiet">报告未引用额外证据</p>'; $('#agentReport').hidden=false; applyAgentRun(data);
   }
   async function cancelAgentRun() { if(!state.agent.running)return; $('#agentRunState').textContent='取消中'; try{await adapter.cancelAgentRun(state.agent.runId);pollAgentRun();}catch(error){toast(`取消巡视失败：${error.message}`);} }
+
+  function renderRecycleCandidates() {
+    const list = $('#recycleList'), items = state.recycle.candidates;
+    if (!items.length) {
+      list.innerHTML = '<p class="quiet">这次观察没有发现符合临时或残留特征的文件。</p>';
+    } else {
+      list.innerHTML = items.map((item, index) => {
+        const checked = state.recycle.selected.has(item.entry_id) ? 'checked' : '';
+        const blocked = item.eligible ? '' : 'blocked';
+        const note = item.eligible ? escapeHtml(item.reason || '') : `无法回收：${escapeHtml(item.blocker || '未知原因')}`;
+        return `<label class="recycle-row ${blocked}"><input type="checkbox" data-recycle-index="${index}" ${checked} ${item.eligible ? '' : 'disabled'}><span class="recycle-copy"><strong>${escapeHtml(item.name)}</strong><small class="recycle-path">${escapeHtml(item.path)}</small><small class="recycle-note">${note}</small></span><span class="recycle-size">${formatBytes(item.size)}</span></label>`;
+      }).join('');
+    }
+    updateRecycleSummary();
+  }
+  function updateRecycleSummary() {
+    const chosen = state.recycle.candidates.filter(item => state.recycle.selected.has(item.entry_id));
+    const bytes = chosen.reduce((sum, item) => sum + Number(item.size || 0), 0);
+    $('#recycleSummary').textContent = chosen.length ? `已选择 ${chosen.length} 项 · ${formatBytes(bytes)}` : '尚未选择任何文件';
+    $('#recycleReviewBtn').disabled = !chosen.length || state.recycle.busy;
+  }
+  async function openRecycle() {
+    if (state.demo) { toast('演示生态中的文件并不存在，无法回收'); return; }
+    $('#recycleDialog').showModal();
+    $('#recycleList').innerHTML = '<p class="quiet">正在读取本地观察结果…</p>';
+    state.recycle.selected = new Set();
+    try {
+      const data = await adapter.recycleCandidates();
+      state.recycle.candidates = data.candidates || [];
+      renderRecycleCandidates();
+    } catch (error) {
+      $('#recycleList').innerHTML = `<p class="quiet">无法读取候选清单：${escapeHtml(error.message || error)}</p>`;
+    }
+    loadRecycleHistory();
+  }
+  async function loadRecycleHistory() {
+    try {
+      const data = await adapter.recycleHistory();
+      const items = data.items || [];
+      $('#recycleHistory').innerHTML = items.length ? items.map(item => {
+        const label = { recycled: '已移入回收站', refused: 'Windows 未接受', failed: '失败' }[item.outcome] || item.outcome;
+        return `<div class="recycle-history-row"><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(label)}</span><small>${escapeHtml(String(item.recycled_at || '').slice(0, 19).replace('T', ' '))} · ${formatBytes(item.size)}</small><small class="recycle-path">${escapeHtml(item.path)}</small></div>`;
+      }).join('') : '<p class="quiet">尚未回收过任何文件</p>';
+    } catch (_) {}
+  }
+  async function reviewRecycle() {
+    const ids = state.recycle.candidates.filter(item => state.recycle.selected.has(item.entry_id)).map(item => item.entry_id);
+    if (!ids.length) return;
+    const button = $('#recycleReviewBtn');
+    button.disabled = true;
+    try {
+      state.recycle.preview = await adapter.previewRecycle(ids);
+      const items = state.recycle.preview.items || [];
+      $('#recycleConfirmList').innerHTML = items.map(item => `<div class="recycle-confirm-row"><strong>${escapeHtml(item.name)}</strong><small class="recycle-path">${escapeHtml(item.path)}</small><span>${formatBytes(item.size)}</span></div>`).join('');
+      $('#recycleConfirmSummary').textContent = `${items.length} 个文件 · 共 ${formatBytes(state.recycle.preview.total_bytes || 0)}`;
+      $('#recycleConfirmHash').textContent = state.recycle.preview.selection_hash || '—';
+      $('#recycleConfirmHash').title = state.recycle.preview.selection_hash || '';
+      $('#recycleConfirmDialog').showModal();
+    } catch (error) {
+      toast(`无法生成回收预览：${error.message || error}`);
+    } finally { button.disabled = false; }
+  }
+  async function confirmRecycle() {
+    const preview = state.recycle.preview;
+    if (!preview) return;
+    const button = $('#confirmRecycleBtn');
+    button.disabled = true; button.textContent = '正在移入回收站…';
+    state.recycle.busy = true;
+    try {
+      const result = await adapter.confirmRecycle(preview.selection_hash, preview.confirmation_token);
+      $('#recycleConfirmDialog').close();
+      state.recycle.preview = null;
+      state.recycle.selected = new Set();
+      const failed = result.failed || 0;
+      toast(failed ? `${result.recycled} 项已移入回收站，${failed} 项未处理，可在回收站还原` : `${result.recycled} 项已移入回收站，可随时从 Windows 回收站还原`);
+      if (failed) result.items.filter(item => item.error).forEach(item => toast(`${item.name}：${item.error}`));
+      await openRecycle();
+      await loadMap();
+    } catch (error) {
+      toast(`回收未执行：${error.message || '确认已失效，请重新选择'}`);
+    } finally {
+      state.recycle.busy = false;
+      button.disabled = false; button.textContent = '确认移入回收站';
+    }
+  }
   async function openPrivacy(){
     $('#privacyDialog').showModal();
     try { const data=await adapter.privacy(); if(data.capabilities) $('#privacyAudit').innerHTML=Object.entries(data.capabilities).map(([k,v])=>`<div><span>${escapeHtml(k)}</span><strong class="${v===false?'safe':''}">${escapeHtml(v===false?'禁用':String(v))}</strong></div>`).join(''); const payload=data.agent_payload||data.payload||state.agent.lastPayload; $('#privacyPayload').textContent=payload?payloadText(payload):'尚无可展示的 payload'; }
@@ -814,6 +903,8 @@
   $('.settings-tabs').onclick=e=>{const b=e.target.closest('[data-settings-tab]');if(b)switchSettingsTab(b.dataset.settingsTab);};$('.audit-tabs').onclick=e=>{const b=e.target.closest('[data-audit-tab]');if(b)switchAuditTab(b.dataset.auditTab);};
   $('#networkEnabled').onchange=()=>{if(!$('#networkEnabled').checked&&state.agent.running)cancelAgentRun();};
   $('#rootsList').onclick=e=>{const button=e.target.closest('[data-remove-root]');if(button)removeRoot(Number(button.dataset.removeRoot));};$('#driveList').onchange=e=>{const input=e.target.closest('[data-drive-index]');if(!input)return;const drive=state.drives[Number(input.dataset.driveIndex)];if(drive)drive.selected=input.checked;$('#computerScanBtn').disabled=!selectedDrives().length;};
+  $('#recycleBtn').onclick=openRecycle;$('#recycleReviewBtn').onclick=reviewRecycle;$('#confirmRecycleBtn').onclick=confirmRecycle;
+  $('#recycleList').onchange=e=>{const input=e.target.closest('[data-recycle-index]');if(!input)return;const item=state.recycle.candidates[Number(input.dataset.recycleIndex)];if(!item)return;if(input.checked)state.recycle.selected.add(item.entry_id);else state.recycle.selected.delete(item.entry_id);updateRecycleSummary();};
   $('#zoneList').onclick=e=>{const b=e.target.closest('[data-zone]');if(b)focusZone(b.dataset.zone);};$('#briefCards').onclick=e=>{const b=e.target.closest('[data-zone]');if(b)focusZone(b.dataset.zone);};
   $('.drawer-close').onclick=closeDrawer;$('#backdrop').onclick=()=>{closeDrawer();$('#agentDrawer').classList.remove('open');$('#agentDrawer').setAttribute('aria-hidden','true');};$('#drawerContent').onclick=e=>{const b=e.target.closest('[data-action]');if(b)drawerAction(b.dataset.action);};
   $('#searchInput').addEventListener('input',e=>search(e.target.value));$('#searchResults').onclick=e=>{const b=e.target.closest('[data-node]');if(!b)return;const n=state.nodes.find(n=>String(n.id)===b.dataset.node);if(n)openDetail(n);$('#searchResults').hidden=true;};

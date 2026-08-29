@@ -37,6 +37,7 @@ type Service struct {
 	cfg     config.Config
 	manager *ScanManager
 	agent   *AgentManager
+	recycle *RecycleManager
 }
 
 func New(options Options) (*Service, error) {
@@ -60,7 +61,7 @@ func New(options Options) (*Service, error) {
 		return nil, fmt.Errorf("restore latest scan: %w", err)
 	}
 	factory := func(cfg config.Config) (scanEngine, error) { return scanner.New(cfg) }
-	svc := &Service{db: db, cfg: cfg, manager: newScanManager(options.Context, db, latest, factory)}
+	svc := &Service{db: db, cfg: cfg, manager: newScanManager(options.Context, db, latest, factory), recycle: newRecycleManager()}
 	svc.agent = newAgentManager(db, options.Model, options.Secrets, svc.agentSnapshot)
 	return svc, nil
 }
@@ -222,7 +223,7 @@ func (s *Service) Status(context.Context) StatusDTO {
 		lastScan = scan.EndedAt.Local().Format("2006-01-02 15:04")
 	}
 	network, _ := s.db.NetworkEnabled(context.Background(), defaultProfileID)
-	status := StatusDTO{Scanning: state != ScanIdle, State: state, ScanID: taskID, TaskResult: taskResult, LastScan: lastScan, LastError: lastErr, Stats: stats(scan), ReadOnly: true, Network: network, Partial: scan.Partial, Truncated: scan.Truncated, TruncationCause: scan.TruncationReason, ErrorCount: scan.ErrorCount}
+	status := StatusDTO{Scanning: state != ScanIdle, State: state, ScanID: taskID, TaskResult: taskResult, LastScan: lastScan, LastError: lastErr, Stats: stats(scan), ScanReadOnly: true, Network: network, Partial: scan.Partial, Truncated: scan.Truncated, TruncationCause: scan.TruncationReason, ErrorCount: scan.ErrorCount}
 	if hasProgress && state != ScanIdle {
 		status.Progress = &ScanProgressDTO{
 			Phase: string(progress.Phase), ObservedEntries: progress.ObservedEntries, Files: progress.Files,
@@ -270,11 +271,18 @@ func (s *Service) Reveal(ctx context.Context, id string) (RevealDTO, error) {
 	return RevealDTO{OK: true}, nil
 }
 
-func (s *Service) Privacy(context.Context) PrivacyDTO {
+func (s *Service) Privacy(ctx context.Context) PrivacyDTO {
 	scan, _, _, _, _, _, _ := s.manager.snapshot()
+	recycled, _ := s.db.RecycledItems(ctx, 500)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return PrivacyDTO{Capabilities: CapabilitiesDTO{LocalHash: s.cfg.HashSHA256, AuthorizedRootCount: len(s.cfg.Roots)}, AgentPayload: privacy.Isolate(scan), ExcludedNames: append([]string(nil), s.cfg.ExcludedNames...)}
+	capabilities := CapabilitiesDTO{
+		RecycleBin:          "仅逐项确认后",
+		LocalHash:           s.cfg.HashSHA256,
+		AuthorizedRootCount: len(s.cfg.Roots),
+		RecycledItemCount:   len(recycled),
+	}
+	return PrivacyDTO{Capabilities: capabilities, AgentPayload: privacy.Isolate(scan), ExcludedNames: append([]string(nil), s.cfg.ExcludedNames...)}
 }
 
 func (s *Service) Demo(context.Context) DemoDTO { return DemoDTO{Nodes: demoNodes()} }
