@@ -5,7 +5,7 @@
   const canvas = $('#ecosystemCanvas');
   const stage = $('#canvasStage');
   const ctx = canvas.getContext('2d');
-  const state = { token: '', nodes: [], allNodes: [], expanded: new Set(), roots: [], drives: [], recommendations: [], view: { x: 0, y: 0, scale: 1 }, dragging: false, moved: false, last: null, hover: null, demo: false, scanning: false, cancelling: false, statusTimer: 0, scanProgress: { startedAt: 0, failures: 0, last: null, taskId: '' }, model: { provider_type: 'cloud', base_url: '', model: '', network_enabled: false, has_api_key: false }, agent: { preview: null, runId: '', running: false, timer: 0, startedAt: 0, lastPayload: null, audits: [] }, recycle: { candidates: [], selected: new Set(), preview: null, busy: false } };
+  const state = { token: '', nodes: [], allNodes: [], expanded: new Set(), truncation: null, roots: [], drives: [], recommendations: [], view: { x: 0, y: 0, scale: 1 }, dragging: false, moved: false, last: null, hover: null, demo: false, scanning: false, cancelling: false, statusTimer: 0, scanProgress: { startedAt: 0, failures: 0, last: null, taskId: '' }, model: { provider_type: 'cloud', base_url: '', model: '', network_enabled: false, has_api_key: false }, agent: { preview: null, runId: '', running: false, timer: 0, startedAt: 0, lastPayload: null, audits: [] }, recycle: { candidates: [], selected: new Set(), preview: null, busy: false } };
   const zones = {
     active: { name: '活跃森林', color: '#6fd48c', description: '近期频繁生长与访问的文件' },
     seedlings: { name: '幼苗区', color: '#c6e56a', description: '新近出现、仍在成长的文件' },
@@ -412,6 +412,7 @@
     state.expanded.clear();
     applyNodes(raw.map(normalizeNode));
     state.recommendations = data.recommendations || [];
+    state.truncation = data.nodes_truncated ? { omitted: data.nodes_omitted || 0, total: data.nodes_total || 0 } : null;
     renderEmpty(!state.nodes.length);
     updateStats(data.stats || {});
     buildSidebar();
@@ -423,11 +424,15 @@
     const count = stats.files ?? stats.count ?? state.allNodes.length;
     const bytes = stats.bytes ?? stats.total_bytes ?? state.allNodes.reduce((s,n) => s + n.size, 0);
     const recs = stats.recommendations ?? state.recommendations.length;
-    $('#mapStats').innerHTML = `<span class="stat-item"><strong>${Number(count).toLocaleString('zh-CN')}</strong> 个文件</span><span class="stat-item"><strong>${formatBytes(bytes)}</strong> 已观察</span><span class="stat-item"><strong>${recs}</strong> 个建议</span>`;
+    // The canvas only draws the largest entries, so say what it leaves out
+    // rather than letting the file count imply everything is on screen.
+    const omitted = state.truncation ? `<span class="stat-item quiet" title="地图只绘制体积最大的节点，统计数字仍为全部结果">地图显示最大 <strong>${(state.truncation.total - state.truncation.omitted).toLocaleString('zh-CN')}</strong> 项，另有 <strong>${state.truncation.omitted.toLocaleString('zh-CN')}</strong> 项未绘制</span>` : '';
+    $('#mapStats').innerHTML = `<span class="stat-item"><strong>${Number(count).toLocaleString('zh-CN')}</strong> 个文件</span><span class="stat-item"><strong>${formatBytes(bytes)}</strong> 已观察</span><span class="stat-item"><strong>${recs}</strong> 个建议</span>${omitted}`;
   }
   function loadDemo(data) {
     const raw = data && (data.nodes || data.items);
     state.expanded.clear();
+    state.truncation = null;
     applyNodes((raw?.length ? raw : demoNodes).map(normalizeNode));
     state.demo = true; state.recommendations = [{node_id:'n3'},{node_id:'n6'},{node_id:'n11'}];
     $('#lastScan').textContent = '演示生态 · 本地样本';

@@ -244,7 +244,13 @@ func (s *Service) Status(context.Context) StatusDTO {
 func (s *Service) Map(ctx context.Context) MapDTO {
 	scan, _, _, _, _, _, _ := s.manager.snapshot()
 	ignored, _ := s.db.IgnoredRecommendations(ctx, scan.ID)
-	return MapDTO{Nodes: buildNodes(scan, false), Stats: stats(scan), Recommendations: recommendationsFiltered(scan, ignored)}
+	total := len(mapEntries(scan))
+	out := MapDTO{Nodes: buildNodes(scan, false), Stats: stats(scan), Recommendations: recommendationsFiltered(scan, ignored), NodesTotal: total}
+	if total > len(out.Nodes) {
+		out.NodesTruncated = true
+		out.NodesOmitted = total - len(out.Nodes)
+	}
+	return out
 }
 
 func (s *Service) Node(_ context.Context, id string) (NodeDTO, error) {
@@ -377,7 +383,24 @@ func firstEqualFold(paths []string, target string) int {
 	return -1
 }
 
+// mapNodeLimit caps how many entries the map renders. Stats are computed over
+// the whole scan, so the map is a top-N view, not the full picture; MapDTO
+// reports the omission rather than letting the canvas imply completeness.
+const mapNodeLimit = 180
+
 func buildNodes(scan model.Scan, paths bool) []NodeDTO {
+	entries := mapEntries(scan)
+	if len(entries) > mapNodeLimit {
+		entries = entries[:mapNodeLimit]
+	}
+	nodes := make([]NodeDTO, 0, len(entries))
+	for i, entry := range entries {
+		nodes = append(nodes, nodeFromEntry(entry, paths, i))
+	}
+	return nodes
+}
+
+func mapEntries(scan model.Scan) []model.Entry {
 	entries := make([]model.Entry, 0, len(scan.Entries))
 	for _, entry := range scan.Entries {
 		if entry.Kind == model.KindFile || entry.GitProject {
@@ -385,14 +408,7 @@ func buildNodes(scan model.Scan, paths bool) []NodeDTO {
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Size > entries[j].Size })
-	if len(entries) > 180 {
-		entries = entries[:180]
-	}
-	nodes := make([]NodeDTO, 0, len(entries))
-	for i, entry := range entries {
-		nodes = append(nodes, nodeFromEntry(entry, paths, i))
-	}
-	return nodes
+	return entries
 }
 
 func nodeFromEntry(entry model.Entry, paths bool, index int) NodeDTO {

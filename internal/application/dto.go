@@ -133,6 +133,12 @@ type MapDTO struct {
 	Nodes           []NodeDTO           `json:"nodes"`
 	Stats           StatsDTO            `json:"stats"`
 	Recommendations []RecommendationDTO `json:"recommendations"`
+	// Stats cover the whole scan but Nodes are capped at the largest entries.
+	// These fields let the UI say so instead of presenting a partial canvas as
+	// the complete picture.
+	NodesTruncated bool `json:"nodes_truncated,omitempty"`
+	NodesOmitted   int  `json:"nodes_omitted,omitempty"`
+	NodesTotal     int  `json:"nodes_total,omitempty"`
 }
 
 type RevealDTO struct {

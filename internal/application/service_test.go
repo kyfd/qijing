@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,6 +19,34 @@ import (
 // classify.Apply sorts Entry.Classes alphabetically, so zoneFor must not let
 // that ordering decide which class wins. "dormant" sorts before "giant",
 // "orphan" and "rotten" and used to shadow all three.
+// The map draws only the largest entries while stats cover the whole scan.
+// That gap must be reported, otherwise the canvas silently implies it is
+// showing everything.
+func TestBuildNodesReportsTruncation(t *testing.T) {
+	entries := make([]model.Entry, mapNodeLimit+25)
+	for i := range entries {
+		entries[i] = model.Entry{ID: fmt.Sprintf("e%d", i), Kind: model.KindFile, Size: int64(i + 1), ModTime: time.Now()}
+	}
+	scan := model.Scan{ID: "s", Entries: entries}
+
+	nodes := buildNodes(scan, false)
+	if len(nodes) != mapNodeLimit {
+		t.Fatalf("nodes = %d, want %d", len(nodes), mapNodeLimit)
+	}
+	// Truncation must keep the largest entries, not an arbitrary slice.
+	if nodes[0].Size != int64(len(entries)) {
+		t.Fatalf("largest node size = %d, want %d", nodes[0].Size, len(entries))
+	}
+	if total := len(mapEntries(scan)); total != len(entries) {
+		t.Fatalf("mapEntries = %d, want %d", total, len(entries))
+	}
+
+	// Stats must still describe every file, not just the drawn ones.
+	if got := stats(scan).Files; got != int64(len(entries)) {
+		t.Fatalf("stats.Files = %d, want %d", got, len(entries))
+	}
+}
+
 func TestZoneForPrefersSpecificClassOverDormant(t *testing.T) {
 	cfg := config.Default()
 	now := time.Now()
