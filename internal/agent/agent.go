@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sort"
 
-	"fileecosystem/internal/model"
-	"fileecosystem/internal/privacy"
+	"github.com/kyfd/qijing/internal/model"
+	"github.com/kyfd/qijing/internal/privacy"
 )
 
 // Report is a path-free, deterministic observation generated without a model.

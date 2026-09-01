@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"os"
 
-	"fileecosystem/internal/config"
-	"fileecosystem/internal/privacy"
-	"fileecosystem/internal/scanner"
+	"github.com/kyfd/qijing/internal/config"
+	"github.com/kyfd/qijing/internal/privacy"
+	"github.com/kyfd/qijing/internal/scanner"
 )
 
 // ecosystem-scanner is a deliberately narrow helper. Its only filesystem

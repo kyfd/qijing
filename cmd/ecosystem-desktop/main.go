@@ -5,7 +5,7 @@ package main
 import (
 	"log"
 
-	"fileecosystem/internal/desktop"
+	"github.com/kyfd/qijing/internal/desktop"
 )
 
 func main() {

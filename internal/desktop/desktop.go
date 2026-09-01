@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"sync"
 
-	"fileecosystem/internal/instance"
-	"fileecosystem/internal/server"
-	"fileecosystem/internal/tray"
+	"github.com/kyfd/qijing/internal/instance"
+	"github.com/kyfd/qijing/internal/server"
+	"github.com/kyfd/qijing/internal/tray"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"

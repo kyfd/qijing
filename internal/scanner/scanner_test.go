@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"fileecosystem/internal/config"
-	"fileecosystem/internal/model"
+	"github.com/kyfd/qijing/internal/config"
+	"github.com/kyfd/qijing/internal/model"
 )
 
 func TestScanInvariantsRelationsAndExclusions(t *testing.T) {

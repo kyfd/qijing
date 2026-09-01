@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"fileecosystem/internal/platform"
-	"fileecosystem/internal/server"
+	"github.com/kyfd/qijing/internal/platform"
+	"github.com/kyfd/qijing/internal/server"
 )
 
 func main() {

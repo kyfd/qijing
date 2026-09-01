@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"fileecosystem/internal/store"
+	"github.com/kyfd/qijing/internal/store"
 )
 
 type testSecrets struct{ key string }

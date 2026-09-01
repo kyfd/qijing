@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"fileecosystem/internal/llm"
-	"fileecosystem/internal/model"
+	"github.com/kyfd/qijing/internal/llm"
+	"github.com/kyfd/qijing/internal/model"
 )
 
 func TestCloudPayloadPrivacyAndRotatingIDs(t *testing.T) {

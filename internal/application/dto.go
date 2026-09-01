@@ -2,9 +2,9 @@
 package application
 
 import (
-	"fileecosystem/internal/agent"
-	"fileecosystem/internal/model"
-	"fileecosystem/internal/privacy"
+	"github.com/kyfd/qijing/internal/agent"
+	"github.com/kyfd/qijing/internal/model"
+	"github.com/kyfd/qijing/internal/privacy"
 )
 
 // RootDTO is one explicitly authorized filesystem root.

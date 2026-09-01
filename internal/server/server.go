@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"fileecosystem/internal/application"
-	webassets "fileecosystem/web"
+	"github.com/kyfd/qijing/internal/application"
+	webassets "github.com/kyfd/qijing/web"
 )
 
 type Options struct {

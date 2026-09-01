@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"fileecosystem/internal/application"
+	"github.com/kyfd/qijing/internal/application"
 )
 
 type apiKeyRequest struct {

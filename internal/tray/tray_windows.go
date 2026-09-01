@@ -5,7 +5,7 @@ package tray
 import (
 	"sync"
 
-	"fileecosystem/internal/appicon"
+	"github.com/kyfd/qijing/internal/appicon"
 
 	"fyne.io/systray"
 )

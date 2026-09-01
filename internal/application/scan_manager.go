@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"fileecosystem/internal/config"
-	"fileecosystem/internal/model"
-	"fileecosystem/internal/scanner"
-	"fileecosystem/internal/store"
+	"github.com/kyfd/qijing/internal/config"
+	"github.com/kyfd/qijing/internal/model"
+	"github.com/kyfd/qijing/internal/scanner"
+	"github.com/kyfd/qijing/internal/store"
 )
 
 var (

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"fileecosystem/internal/drives"
+	"github.com/kyfd/qijing/internal/drives"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )

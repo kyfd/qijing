@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"fileecosystem/internal/classify"
-	"fileecosystem/internal/config"
-	"fileecosystem/internal/model"
-	"fileecosystem/internal/pathsafe"
+	"github.com/kyfd/qijing/internal/classify"
+	"github.com/kyfd/qijing/internal/config"
+	"github.com/kyfd/qijing/internal/model"
+	"github.com/kyfd/qijing/internal/pathsafe"
 )
 
 var (

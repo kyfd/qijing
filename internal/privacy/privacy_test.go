@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"fileecosystem/internal/model"
+	"github.com/kyfd/qijing/internal/model"
 )
 
 func TestAgentDataNeverContainsPathsOrNames(t *testing.T) {

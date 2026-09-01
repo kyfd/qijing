@@ -231,7 +231,7 @@ go build -tags production -trimpath `
 只使用临时演示目录：
 
 ```powershell
-$demo = Join-Path $env:TEMP "fileecosystem-demo"
+$demo = Join-Path $env:TEMP "qijing-demo"
 New-Item -ItemType Directory -Force $demo | Out-Null
 Set-Content -LiteralPath (Join-Path $demo "example.txt") -Value "demo"
 Get-ChildItem -LiteralPath $demo -Force

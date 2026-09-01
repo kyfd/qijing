@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"fileecosystem/internal/llm"
+	"github.com/kyfd/qijing/internal/llm"
 )
 
 const MaxSteps = 5

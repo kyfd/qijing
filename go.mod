@@ -1,4 +1,4 @@
-module fileecosystem
+module github.com/kyfd/qijing
 
 go 1.26.3
 

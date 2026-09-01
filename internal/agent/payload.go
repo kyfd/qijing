@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"fileecosystem/internal/model"
+	"github.com/kyfd/qijing/internal/model"
 )
 
 const PayloadSchemaVersion = 1

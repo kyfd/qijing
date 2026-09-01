@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"fileecosystem/internal/model"
+	"github.com/kyfd/qijing/internal/model"
 	_ "modernc.org/sqlite"
 )
 

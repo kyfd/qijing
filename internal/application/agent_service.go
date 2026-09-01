@@ -16,11 +16,11 @@ import (
 	"sync"
 	"time"
 
-	"fileecosystem/internal/agent"
-	"fileecosystem/internal/llm"
-	"fileecosystem/internal/model"
-	"fileecosystem/internal/secret"
-	"fileecosystem/internal/store"
+	"github.com/kyfd/qijing/internal/agent"
+	"github.com/kyfd/qijing/internal/llm"
+	"github.com/kyfd/qijing/internal/model"
+	"github.com/kyfd/qijing/internal/secret"
+	"github.com/kyfd/qijing/internal/store"
 )
 
 var (
@@ -172,7 +172,7 @@ type AgentManager struct {
 
 func newAgentManager(db *store.Store, client ModelClient, secrets SecretStore, snapshot func() model.Scan) *AgentManager {
 	if secrets == nil {
-		secrets = osSecrets{store: secret.New("fileecosystem")}
+		secrets = osSecrets{store: secret.New("github.com/kyfd/qijing")}
 	}
 	if client == nil {
 		client = llmModelClient{}

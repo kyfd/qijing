@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"fileecosystem/internal/model"
-	"fileecosystem/internal/pathsafe"
-	"fileecosystem/internal/platform"
-	"fileecosystem/internal/store"
+	"github.com/kyfd/qijing/internal/model"
+	"github.com/kyfd/qijing/internal/pathsafe"
+	"github.com/kyfd/qijing/internal/platform"
+	"github.com/kyfd/qijing/internal/store"
 )
 
 var (

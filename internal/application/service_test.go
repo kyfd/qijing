@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"fileecosystem/internal/classify"
-	"fileecosystem/internal/config"
-	"fileecosystem/internal/model"
-	"fileecosystem/internal/scanner"
-	"fileecosystem/internal/store"
+	"github.com/kyfd/qijing/internal/classify"
+	"github.com/kyfd/qijing/internal/config"
+	"github.com/kyfd/qijing/internal/model"
+	"github.com/kyfd/qijing/internal/scanner"
+	"github.com/kyfd/qijing/internal/store"
 )
 
 // classify.Apply sorts Entry.Classes alphabetically, so zoneFor must not let

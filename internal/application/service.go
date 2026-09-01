@@ -11,13 +11,13 @@ import (
 	"strings"
 	"sync"
 
-	"fileecosystem/internal/config"
-	"fileecosystem/internal/model"
-	"fileecosystem/internal/pathsafe"
-	"fileecosystem/internal/platform"
-	"fileecosystem/internal/privacy"
-	"fileecosystem/internal/scanner"
-	"fileecosystem/internal/store"
+	"github.com/kyfd/qijing/internal/config"
+	"github.com/kyfd/qijing/internal/model"
+	"github.com/kyfd/qijing/internal/pathsafe"
+	"github.com/kyfd/qijing/internal/platform"
+	"github.com/kyfd/qijing/internal/privacy"
+	"github.com/kyfd/qijing/internal/scanner"
+	"github.com/kyfd/qijing/internal/store"
 )
 
 var ErrNodeNotFound = errors.New("node not found")

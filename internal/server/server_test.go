@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"fileecosystem/internal/application"
+	"github.com/kyfd/qijing/internal/application"
 )
 
 func TestStatusIncludesNestedProgressSchema(t *testing.T) {

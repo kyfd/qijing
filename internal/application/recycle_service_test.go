@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"fileecosystem/internal/model"
-	"fileecosystem/internal/pathsafe"
-	"fileecosystem/internal/store"
+	"github.com/kyfd/qijing/internal/model"
+	"github.com/kyfd/qijing/internal/pathsafe"
+	"github.com/kyfd/qijing/internal/store"
 )
 
 // seedRecycleScan authorizes root and installs a snapshot describing the given

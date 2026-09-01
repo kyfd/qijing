@@ -24,7 +24,7 @@ func New(namespace string) Store {
 		return &dpapiStore{dir: ""}
 	}
 	if namespace == "" {
-		namespace = "fileecosystem"
+		namespace = "github.com/kyfd/qijing"
 	}
 	return &dpapiStore{dir: filepath.Join(base, namespace, "secrets")}
 }

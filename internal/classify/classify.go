@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"fileecosystem/internal/config"
-	"fileecosystem/internal/model"
+	"github.com/kyfd/qijing/internal/config"
+	"github.com/kyfd/qijing/internal/model"
 )
 
 // Apply replaces all derived classes on entries using a stable clock value.

@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"fileecosystem/internal/server"
+	"github.com/kyfd/qijing/internal/server"
 )
 
 func TestDesktopHandlerUsesExpectedInProcessHost(t *testing.T) {

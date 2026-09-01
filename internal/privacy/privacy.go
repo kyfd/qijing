@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"fileecosystem/internal/model"
+	"github.com/kyfd/qijing/internal/model"
 )
 
 // AgentEntry deliberately has no Path, Relative, root path, or filename field.
