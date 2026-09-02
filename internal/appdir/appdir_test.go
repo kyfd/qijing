@@ -363,6 +363,48 @@ func TestSymlinkInLegacyRefusesMigration(t *testing.T) {
 	}
 }
 
+// A legacy tree too large to move must never block startup: the migration
+// is skipped, the legacy directory stays untouched, and the marker records
+// the skip.
+func TestOversizedLegacySkipsMigrationAndStartsFresh(t *testing.T) {
+	opts := testOptions(t)
+	opts.LegacyData = filepath.Join(t.TempDir(), "legacy")
+	makeLegacyDB(t, opts.LegacyData)
+	opts.LegacySize = func(dir string) (int64, error) { return maxMigratedTotal + 1, nil }
+
+	layout, err := EnsureWithOptions(opts)
+	if err != nil {
+		t.Fatalf("oversized legacy must not block startup: %v", err)
+	}
+	if marker := readMarker(t, layout.Root); marker.Note != "legacy_skipped_too_large" {
+		t.Fatalf("marker = %+v", marker)
+	}
+	if _, err := os.Stat(filepath.Join(opts.LegacyData, "ecosystem.db")); err != nil {
+		t.Fatalf("legacy dir must be untouched: %v", err)
+	}
+}
+
+// Without enough free space for backup plus staging, the migration skips
+// instead of half-filling the disk and failing.
+func TestInsufficientSpaceSkipsMigration(t *testing.T) {
+	opts := testOptions(t)
+	opts.LegacyData = filepath.Join(t.TempDir(), "legacy")
+	makeLegacyDB(t, opts.LegacyData)
+	opts.LegacySize = func(dir string) (int64, error) { return 1 << 30, nil }
+	opts.FreeBytes = func(path string) (int64, error) { return 1 << 20, nil }
+
+	layout, err := EnsureWithOptions(opts)
+	if err != nil {
+		t.Fatalf("insufficient space must not block startup: %v", err)
+	}
+	if marker := readMarker(t, layout.Root); marker.Note != "legacy_skipped_insufficient_space" {
+		t.Fatalf("marker = %+v", marker)
+	}
+	if entries, err := os.ReadDir(layout.Data); err != nil || len(entries) != 0 {
+		t.Fatalf("no data may be copied when space is insufficient: %v (%v)", entries, err)
+	}
+}
+
 func TestSqliteQuickCheck(t *testing.T) {
 	dir := t.TempDir()
 	makeLegacyDB(t, dir)

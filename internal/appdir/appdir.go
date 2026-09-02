@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kyfd/qijing/internal/diskspace"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -34,8 +36,12 @@ const (
 	markerVersion    = 1
 	secretsDirName   = "secrets"
 	dpapiSuffix      = ".dpapi"
-	maxMigratedEntry = 512 << 20 // refuse to copy absurdly large leftovers
-	maxMigratedTotal = 2 << 30
+	maxMigratedEntry = 4 << 30 // refuse to copy absurdly large leftovers
+	maxMigratedTotal = 8 << 30
+	// copyMargin is the headroom the volume needs beyond two copies of the
+	// legacy tree (backup plus staging) for the migration to be worth
+	// starting.
+	copyMargin = 256 << 20
 )
 
 // Layout is the resolved on-disk layout. Every directory is inside Root and
@@ -64,6 +70,12 @@ type Options struct {
 	CheckDB func(path string) error
 	// Now produces timestamps for backup directory names.
 	Now func() time.Time
+	// LegacySize reports the total byte size of the legacy tree. Injected
+	// for tests; production walks the tree.
+	LegacySize func(dir string) (int64, error)
+	// FreeBytes reports the free space on the volume holding the target
+	// root. Injected for tests; production queries the volume.
+	FreeBytes func(path string) (int64, error)
 	// Logf receives sanitized progress notes. It must never receive secret
 	// material; the inputs here are directory paths only.
 	Logf func(format string, args ...any)
@@ -138,6 +150,12 @@ func EnsureWithOptions(opts Options) (Layout, error) {
 	if opts.Logf == nil {
 		opts.Logf = func(string, ...any) {}
 	}
+	if opts.LegacySize == nil {
+		opts.LegacySize = treeSize
+	}
+	if opts.FreeBytes == nil {
+		opts.FreeBytes = diskspace.FreeBytes
+	}
 	layout := Layout{
 		Root:    filepath.Clean(opts.Root),
 		Data:    filepath.Join(opts.Root, "data"),
@@ -207,14 +225,31 @@ func migrateData(opts Options, layout Layout) (migrateResult, error) {
 	if err := opts.CheckDB(legacyDB); err != nil {
 		if !errors.Is(err, errDBMissing) {
 			// An unreadable index holds nothing recoverable, but it is still
-			// the user's history: keep a copy as evidence, start fresh, and
-			// say so in the marker instead of failing startup forever.
+			// the user's history: keep a copy as evidence when possible,
+			// start fresh, and say so in the marker instead of failing
+			// startup forever.
 			kept := filepath.Join(layout.Backups, "legacy-unreadable-"+opts.Now().UTC().Format("20060102T150405"))
 			if copyErr := copyTree(opts.LegacyData, kept); copyErr != nil {
-				return migrateResult{}, fmt.Errorf("legacy database failed its integrity check (%v) and could not be archived: %w", err, copyErr)
+				opts.Logf("legacy database unreadable (%v) and could not be archived (%v); starting fresh", err, copyErr)
+			} else {
+				opts.Logf("legacy database unreadable (%v); archived to %s and starting fresh", err, filepath.Base(kept))
 			}
-			opts.Logf("legacy database unreadable (%v); archived to %s and starting fresh", err, filepath.Base(kept))
 			return migrateResult{source: opts.LegacyData, note: "legacy_db_unrecoverable"}, nil
+		}
+	}
+
+	// A legacy index that cannot be usefully moved must never block the
+	// application: skip it, leave the old directory untouched, and record
+	// the skip in the marker. The user can always rescan.
+	totalSize, err := opts.LegacySize(opts.LegacyData)
+	if err == nil {
+		if totalSize > maxMigratedTotal {
+			opts.Logf("legacy data (%d bytes) exceeds the migration budget; starting fresh", totalSize)
+			return migrateResult{source: opts.LegacyData, note: "legacy_skipped_too_large"}, nil
+		}
+		if free, freeErr := opts.FreeBytes(layout.Root); freeErr == nil && totalSize*2+copyMargin > free {
+			opts.Logf("not enough free space to migrate the legacy data (%d bytes); starting fresh", totalSize)
+			return migrateResult{source: opts.LegacyData, note: "legacy_skipped_insufficient_space"}, nil
 		}
 	}
 
@@ -313,9 +348,15 @@ func sqliteQuickCheck(path string) error {
 		}
 		return err
 	}
-	db, err := sql.Open("sqlite", path)
+	// Open read-only first: the legacy directory must never be modified by
+	// the migration (a plain open would create WAL side files and could
+	// checkpoint into the main file on close).
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?mode=ro")
 	if err != nil {
-		return fmt.Errorf("open %s: %w", filepath.Base(path), err)
+		db, err = sql.Open("sqlite", path)
+		if err != nil {
+			return fmt.Errorf("open %s: %w", filepath.Base(path), err)
+		}
 	}
 	defer db.Close()
 	var result string
@@ -412,6 +453,26 @@ func fileExists(path string) bool {
 func dataDirHasContent(dir string) bool {
 	entries, err := os.ReadDir(dir)
 	return err == nil && len(entries) > 0
+}
+
+// treeSize sums the byte size of a directory tree without following
+// symlinks.
+func treeSize(dir string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Type().IsRegular() {
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			total += info.Size()
+		}
+		return nil
+	})
+	return total, err
 }
 
 func relTo(base, path string) string {
