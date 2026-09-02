@@ -1,0 +1,304 @@
+// Package scanproto defines the versioned wire protocol between the desktop
+// main process (Scanner Broker) and the qijing-scanner subprocess.
+//
+// 设计要点：
+//   - 每帧 = 4 字节大端长度 + JSON 体；两端都强制 MaxFrameBytes 上限；
+//   - 消息方向固定，Message 是显式白名单结构：新增能力必须新增字段，
+//     不存在“任意 JSON 透传”；
+//   - 版本在握手时交换，不一致立即断开。
+package scanproto
+
+import (
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"sync"
+	"time"
+
+	"github.com/kyfd/qijing/internal/config"
+	"github.com/kyfd/qijing/internal/model"
+	"github.com/kyfd/qijing/internal/scanner"
+)
+
+// Version is the protocol version. Both sides exchange it during the
+// handshake and refuse to talk to a different one.
+const Version = 1
+
+// MaxFrameBytes bounds one message. It also bounds any future entry batch,
+// so a misbehaving peer cannot balloon our memory through the protocol.
+const MaxFrameBytes = 8 << 20
+
+const (
+	TypeHello     = "hello"     // client → server
+	TypeScan      = "scan"      // client → server
+	TypeCancel    = "cancel"    // client → server
+	TypeHelloAck  = "hello_ack" // server → client
+	TypeProgress  = "progress"  // server → client
+	TypeEntries   = "entries"   // server → client
+	TypeRelations = "relations" // server → client
+	TypeDone      = "done"      // server → client
+	TypeHeartbeat = "heartbeat" // server → client
+	TypeFatal     = "fatal"     // server → client
+)
+
+// client → server
+
+type Hello struct {
+	Version int    `json:"version"`
+	JobID   string `json:"job_id"`
+}
+
+// ScanOptions is the explicit allowlist of scanner configuration fields.
+// Nothing outside this struct crosses the process boundary, and adding a
+// field is a deliberate, reviewable protocol change.
+type ScanOptions struct {
+	ExcludedNames    []string `json:"excluded_names,omitempty"`
+	HashSHA256       bool     `json:"hash_sha256,omitempty"`
+	HashWholeDrive   bool     `json:"hash_whole_drive,omitempty"`
+	MaxHashBytes     int64    `json:"max_hash_bytes,omitempty"`
+	MaxEntries       int      `json:"max_entries,omitempty"`
+	MaxErrors        int      `json:"max_errors,omitempty"`
+	MaxDurationSecs  int      `json:"max_duration_secs,omitempty"`
+	GiantBytes       int64    `json:"giant_bytes,omitempty"`
+	SeedlingAgeSecs  int64    `json:"seedling_age_secs,omitempty"`
+	DormantAgeSecs   int64    `json:"dormant_age_secs,omitempty"`
+	RottenAgeSecs    int64    `json:"rotten_age_secs,omitempty"`
+	GitZombieAgeSecs int64    `json:"git_zombie_age_secs,omitempty"`
+	OrphanExtensions []string `json:"orphan_extensions,omitempty"`
+	RottenExtensions []string `json:"rotten_extensions,omitempty"`
+}
+
+// OptionsFromConfig extracts the allowed fields from a scan configuration.
+func OptionsFromConfig(cfg config.Config) ScanOptions {
+	return ScanOptions{
+		ExcludedNames:    append([]string(nil), cfg.ExcludedNames...),
+		HashSHA256:       cfg.HashSHA256,
+		HashWholeDrive:   cfg.HashWholeDrive,
+		MaxHashBytes:     cfg.MaxHashBytes,
+		MaxEntries:       cfg.MaxEntries,
+		MaxErrors:        cfg.MaxErrors,
+		MaxDurationSecs:  int(cfg.MaxDuration / time.Second),
+		GiantBytes:       cfg.GiantBytes,
+		SeedlingAgeSecs:  int64(cfg.SeedlingAge / time.Second),
+		DormantAgeSecs:   int64(cfg.DormantAge / time.Second),
+		RottenAgeSecs:    int64(cfg.RottenAge / time.Second),
+		GitZombieAgeSecs: int64(cfg.GitZombieAge / time.Second),
+		OrphanExtensions: append([]string(nil), cfg.OrphanExtensions...),
+		RottenExtensions: append([]string(nil), cfg.RottenExtensions...),
+	}
+}
+
+// Config reconstructs the scanner configuration. Roots stay separate: the
+// broker owns authorization and sends them explicitly.
+func (o ScanOptions) Config() config.Config {
+	return config.Config{
+		ExcludedNames:    append([]string(nil), o.ExcludedNames...),
+		HashSHA256:       o.HashSHA256,
+		HashWholeDrive:   o.HashWholeDrive,
+		MaxHashBytes:     o.MaxHashBytes,
+		MaxEntries:       o.MaxEntries,
+		MaxErrors:        o.MaxErrors,
+		MaxDuration:      time.Duration(o.MaxDurationSecs) * time.Second,
+		GiantBytes:       o.GiantBytes,
+		SeedlingAge:      time.Duration(o.SeedlingAgeSecs) * time.Second,
+		DormantAge:       time.Duration(o.DormantAgeSecs) * time.Second,
+		RottenAge:        time.Duration(o.RottenAgeSecs) * time.Second,
+		GitZombieAge:     time.Duration(o.GitZombieAgeSecs) * time.Second,
+		OrphanExtensions: append([]string(nil), o.OrphanExtensions...),
+		RottenExtensions: append([]string(nil), o.RottenExtensions...),
+	}
+}
+
+type ScanRequest struct {
+	JobID   string      `json:"job_id"`
+	Roots   []string    `json:"roots"`
+	Options ScanOptions `json:"options"`
+}
+
+type Cancel struct {
+	JobID string `json:"job_id,omitempty"`
+}
+
+// server → client
+
+type HelloAck struct {
+	Version        int    `json:"version"`
+	ScannerVersion string `json:"scanner_version,omitempty"`
+}
+
+// Progress is scanner.Progress; the type carries JSON tags so it can travel
+// the wire unchanged.
+type Progress = scanner.Progress
+
+type EntriesBatch struct {
+	Entries []model.Entry `json:"entries"`
+}
+
+type RelationsBatch struct {
+	Relations []model.Relation `json:"relations"`
+}
+
+// Done closes a scan. Roots echo the roots that were actually walked; the
+// broker re-checks that they are a subset of what it authorized.
+type Done struct {
+	ScanID           string    `json:"scan_id"`
+	Status           string    `json:"status"`
+	Partial          bool      `json:"partial"`
+	Truncated        bool      `json:"truncated"`
+	TruncationReason string    `json:"truncation_reason,omitempty"`
+	StartedAt        time.Time `json:"started_at"`
+	EndedAt          time.Time `json:"ended_at"`
+	Roots            []string  `json:"roots,omitempty"`
+	ErrorCount       int       `json:"error_count"`
+	Errors           []string  `json:"errors,omitempty"`
+}
+
+// Fatal is a sanitized, protocol-level error. Detail must never contain
+// paths, file names or secret material: it may surface in logs.
+type Fatal struct {
+	Code   string `json:"code"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// Message is the frame envelope. Exactly one payload field must be set and
+// it must match Type; Conn.Receive enforces this so a malformed peer cannot
+// smuggle payloads under the wrong type.
+type Message struct {
+	Type      string          `json:"type"`
+	Hello     *Hello          `json:"hello,omitempty"`
+	Scan      *ScanRequest    `json:"scan,omitempty"`
+	Cancel    *Cancel         `json:"cancel,omitempty"`
+	HelloAck  *HelloAck       `json:"hello_ack,omitempty"`
+	Progress  *Progress       `json:"progress,omitempty"`
+	Entries   *EntriesBatch   `json:"entries,omitempty"`
+	Relations *RelationsBatch `json:"relations,omitempty"`
+	Done      *Done           `json:"done,omitempty"`
+	Fatal     *Fatal          `json:"fatal,omitempty"`
+	// Heartbeat has no payload; Type alone identifies it.
+}
+
+// Validate checks the envelope invariant.
+func (m *Message) Validate() error {
+	count := 0
+	for _, present := range []bool{
+		m.Hello != nil, m.Scan != nil, m.Cancel != nil, m.HelloAck != nil,
+		m.Progress != nil, m.Entries != nil, m.Relations != nil, m.Done != nil, m.Fatal != nil,
+	} {
+		if present {
+			count++
+		}
+	}
+	if m.Type == TypeHeartbeat {
+		if count != 0 {
+			return errors.New("heartbeat must not carry a payload")
+		}
+		return nil
+	}
+	if count != 1 {
+		return fmt.Errorf("message type %q must carry exactly one payload, got %d", m.Type, count)
+	}
+	switch m.Type {
+	case TypeHello:
+		if m.Hello == nil {
+			return errors.New("type mismatch: hello")
+		}
+	case TypeScan:
+		if m.Scan == nil {
+			return errors.New("type mismatch: scan")
+		}
+	case TypeCancel:
+		if m.Cancel == nil {
+			return errors.New("type mismatch: cancel")
+		}
+	case TypeHelloAck:
+		if m.HelloAck == nil {
+			return errors.New("type mismatch: hello_ack")
+		}
+	case TypeProgress:
+		if m.Progress == nil {
+			return errors.New("type mismatch: progress")
+		}
+	case TypeEntries:
+		if m.Entries == nil {
+			return errors.New("type mismatch: entries")
+		}
+	case TypeRelations:
+		if m.Relations == nil {
+			return errors.New("type mismatch: relations")
+		}
+	case TypeDone:
+		if m.Done == nil {
+			return errors.New("type mismatch: done")
+		}
+	case TypeFatal:
+		if m.Fatal == nil {
+			return errors.New("type mismatch: fatal")
+		}
+	default:
+		return fmt.Errorf("unknown message type %q", m.Type)
+	}
+	return nil
+}
+
+// ErrProtocol marks every violation a peer can cause. Callers treat it as
+// fatal and drop the connection.
+var ErrProtocol = errors.New("protocol violation")
+
+// Conn frames messages over any byte stream. Send is safe for concurrent
+// use (the scanner side writes progress and heartbeats from two goroutines);
+// Receive is single-goroutine by contract.
+type Conn struct {
+	rw      io.ReadWriter
+	writeMu sync.Mutex
+}
+
+func NewConn(rw io.ReadWriter) *Conn { return &Conn{rw: rw} }
+
+func (c *Conn) Send(msg Message) error {
+	if err := msg.Validate(); err != nil {
+		return fmt.Errorf("%w: outgoing: %v", ErrProtocol, err)
+	}
+	body, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	if len(body) > MaxFrameBytes {
+		return fmt.Errorf("%w: outgoing frame of %d bytes exceeds the limit", ErrProtocol, len(body))
+	}
+	var header [4]byte
+	binary.BigEndian.PutUint32(header[:], uint32(len(body)))
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if _, err := c.rw.Write(header[:]); err != nil {
+		return err
+	}
+	if _, err := c.rw.Write(body); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Conn) Receive() (Message, error) {
+	var header [4]byte
+	if _, err := io.ReadFull(c.rw, header[:]); err != nil {
+		return Message{}, err
+	}
+	size := binary.BigEndian.Uint32(header[:])
+	if size == 0 || size > MaxFrameBytes {
+		return Message{}, fmt.Errorf("%w: incoming frame of %d bytes is out of range", ErrProtocol, size)
+	}
+	body := make([]byte, size)
+	if _, err := io.ReadFull(c.rw, body); err != nil {
+		return Message{}, err
+	}
+	var msg Message
+	if err := json.Unmarshal(body, &msg); err != nil {
+		return Message{}, fmt.Errorf("%w: decode: %v", ErrProtocol, err)
+	}
+	if err := msg.Validate(); err != nil {
+		return Message{}, fmt.Errorf("%w: %v", ErrProtocol, err)
+	}
+	return msg, nil
+}

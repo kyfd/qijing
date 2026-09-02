@@ -17,10 +17,18 @@ import (
 	"time"
 
 	"github.com/kyfd/qijing/internal/application"
+	"github.com/kyfd/qijing/internal/config"
+	"github.com/kyfd/qijing/internal/scanner"
 )
 
+// inProcessScanFactory keeps HTTP-layer tests on the in-process engine; the
+// subprocess broker is exercised in internal/scanbroker.
+func inProcessScanFactory(cfg config.Config) (application.ScanEngine, error) {
+	return scanner.New(cfg)
+}
+
 func TestStatusIncludesNestedProgressSchema(t *testing.T) {
-	srv, err := New(Options{DataDir: t.TempDir(), Addr: "127.0.0.1:8765"})
+	srv, err := New(Options{DataDir: t.TempDir(), Addr: "127.0.0.1:8765", ScanFactory: inProcessScanFactory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +63,7 @@ func TestBatchRootsEndpointIsAtomicAndCanStartReadOnlyScan(t *testing.T) {
 	}
 	beforeHash := sha256.Sum256(content)
 
-	srv, err := New(Options{DataDir: dataDir, Addr: "127.0.0.1:8765"})
+	srv, err := New(Options{DataDir: dataDir, Addr: "127.0.0.1:8765", ScanFactory: inProcessScanFactory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +130,7 @@ func TestAPIRequiresTokenAndScanIsReadOnly(t *testing.T) {
 	}
 	beforeHash := sha256.Sum256(content)
 
-	srv, err := New(Options{DataDir: dataDir, Addr: "127.0.0.1:8765"})
+	srv, err := New(Options{DataDir: dataDir, Addr: "127.0.0.1:8765", ScanFactory: inProcessScanFactory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +182,7 @@ func TestAPIRequiresTokenAndScanIsReadOnly(t *testing.T) {
 }
 
 func TestOriginRejectedAndModelKeyNeverReturned(t *testing.T) {
-	srv, err := New(Options{DataDir: t.TempDir(), Addr: "127.0.0.1:8765"})
+	srv, err := New(Options{DataDir: t.TempDir(), Addr: "127.0.0.1:8765", ScanFactory: inProcessScanFactory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +244,7 @@ func TestAgentHTTPIntegrationWithKeylessLocalModel(t *testing.T) {
 	}))
 	defer modelServer.Close()
 
-	srv, err := New(Options{DataDir: t.TempDir(), Addr: "127.0.0.1:8765", Secrets: &emptySecretStore{}})
+	srv, err := New(Options{DataDir: t.TempDir(), Addr: "127.0.0.1:8765", Secrets: &emptySecretStore{}, ScanFactory: inProcessScanFactory})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,15 @@
 
 ### Trust Hardening（v0.1.x）
 
+- **扫描迁入独立进程**：桌面主进程通过 Scanner Broker（`internal/scanbroker`）
+  拉起 `qijing-scanner.exe`，以版本化的 Named Pipe IPC（`internal/scanproto` +
+  `internal/ipcpipe`）通信：管道 DACL 只允许当前用户连接、8 MiB 帧上限、
+  心跳超时、取消与整体超时。主进程对每条返回 entry 重新校验授权根与
+  RootID，越权即终止扫描。扫描进程带 Job Object（kill-on-close），
+  主进程退出即被回收；其依赖图不含数据库/Agent/回收站/设置代码，
+  并由 `go list -deps` 守护测试钉住。缺少扫描器可执行文件时显式报错，
+  不静默回退进程内扫描。
+  （[ADR 0002](docs/adr/0002-scanner-subprocess-ipc.md)）
 - **命令行入口对齐目标结构**：`cmd/qijing`（正式桌面应用）、
   `cmd/qijing-scanner`（独立扫描进程）、`cmd/qijing-preview`（仅开发调试，
   桌面版不引用）。正式桌面构建仍然不监听任何 TCP 端口。

@@ -19,5 +19,11 @@
 | 索引不进入可能漫游的配置目录；迁移不丢数据 | `internal/appdir`：LocalAppData 布局、完整性检查、备份、staging、原子切换、标记 | `TestNormalMigrationMovesDataAndKeepsLegacy`；`TestBackupFailureLeavesNoPartialState`；`TestStagingFailureRemovesStaging` | 有测试 |
 | 数据目录 DACL 限制到当前用户 | `internal/appdir`：受保护 DACL（用户/SYSTEM/Administrators） | `TestRestrictToCurrentUserMakesDirPrivate`；`TestVerifyUserPrivateRejectsEveryoneGrant`；`TestChildInheritsRestriction` | 有测试 |
 | API Key 密文不放在漫游目录 | DPAPI 密文写入 `%LocalAppData%\Qijing\data\secrets` | 密文迁移为纯复制，测试见 `TestSecretsMigrationCopiesOnlyBlobs` | 有测试 |
+| 扫描在独立进程中执行，进程无数据库/回收站/Agent 能力 | `cmd/qijing-scanner` + `internal/scanbroker`；依赖图由守护测试检查 | `TestScannerProcessHasNoPrivilegedDependencies`；真实子进程端到端 `TestBrokerRunsRealScannerProcess` | 有测试 |
+| IPC 只允许当前用户连接 | `internal/ipcpipe`：Named Pipe SDDL DACL（当前用户 GENERIC_ALL） | `TestDialAndExchangeOverRealPipe`、`TestRestrictToCurrentUserMakesDirPrivate`（数据目录） | 有测试 |
+| IPC 协议版本化，帧有大小上限 | `internal/scanproto`：握手版本校验、8 MiB 帧上限、信封白名单校验 | `TestServeRejectsProtocolVersionMismatch`；`TestReceiveRejectsOversizedFrames`；`TestReceiveRejectsTypePayloadMismatch` | 有测试 |
+| 主进程退出时扫描进程退出 | `internal/scanbroker`：Job Object kill-on-close + 显式 terminate | Job Object 由 Windows 语义保证；进程清理路径由 `TestBrokerSurvivesAbruptScannerDeath` 覆盖 | 有测试（部分依赖 OS 语义） |
+| 主进程重验扫描结果的授权边界 | `internal/scanbroker.validateEntry`：RootID + 绝对路径 + `pathsafe.Contained`；预算上限 | `TestBrokerRejectsPathOutsideAuthorizedRoots`；`TestBrokerRejectsUnknownRootID`；`TestBrokerRejectsRelativePath`；`TestBrokerEnforcesEntryBudgetAgainstRogueScanner` | 有测试 |
+| 心跳超时与取消 | `internal/scanbroker` watchdog + `internal/scannerproc` 取消处理 | `TestBrokerHeartbeatTimeoutTerminatesSilentScanner`；`TestBrokerCancelStopsScanAndReportsCancelledStatus`；`TestServeForwardsCancelAndReportsCancelledDone` | 有测试 |
 
 还没有单独自动化、但代码路径存在的项：云端占位文件跳过、junction 环、超长路径、磁盘拔出、SQLite 被占用。这些会放进 Windows CI，而不是继续只写在文档里。

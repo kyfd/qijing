@@ -44,26 +44,27 @@ const (
 
 // Progress is a compact immutable snapshot of work observed so far. It does
 // not include a percentage because a recursive filesystem scan has no truthful
-// total entry count before traversal.
+// total entry count before traversal. The JSON tags exist because progress
+// travels verbatim over the scanner IPC protocol.
 type Progress struct {
-	Phase            ProgressPhase
-	ObservedEntries  int64
-	Files            int64
-	Directories      int64
-	Bytes            int64
-	RootsStarted     int
-	RootsCompleted   int
-	RootsTotal       int
-	CurrentRootIndex int
-	CurrentRootLabel string
-	Elapsed          time.Duration
-	EntryBudget      int
-	ErrorBudget      int
-	DurationBudget   time.Duration
-	Errors           int
-	Cancelling       bool
-	BudgetTruncated  bool
-	TruncationReason string
+	Phase            ProgressPhase `json:"phase"`
+	ObservedEntries  int64         `json:"observed_entries"`
+	Files            int64         `json:"files"`
+	Directories      int64         `json:"directories"`
+	Bytes            int64         `json:"bytes"`
+	RootsStarted     int           `json:"roots_started"`
+	RootsCompleted   int           `json:"roots_completed"`
+	RootsTotal       int           `json:"roots_total"`
+	CurrentRootIndex int           `json:"current_root_index"`
+	CurrentRootLabel string        `json:"current_root_label,omitempty"`
+	Elapsed          time.Duration `json:"elapsed_ns"`
+	EntryBudget      int           `json:"entry_budget"`
+	ErrorBudget      int           `json:"error_budget"`
+	DurationBudget   time.Duration `json:"duration_budget_ns"`
+	Errors           int           `json:"errors"`
+	Cancelling       bool          `json:"cancelling"`
+	BudgetTruncated  bool          `json:"budget_truncated"`
+	TruncationReason string        `json:"truncation_reason,omitempty"`
 }
 
 type Scanner struct {
@@ -71,6 +72,7 @@ type Scanner struct {
 	Now    func() time.Time
 
 	progress func(Progress)
+	batch    func([]model.Entry) error
 }
 
 // SetProgressCallback installs the scan's snapshot receiver. Scanner invokes
@@ -79,12 +81,25 @@ func (s *Scanner) SetProgressCallback(callback func(Progress)) {
 	s.progress = callback
 }
 
+// SetBatchCallback installs a streaming consumer for scan entries. Entries
+// are already classified when delivered; the callback receives an immutable
+// copy in bounded batches and may slow the scan by blocking (backpressure).
+// A callback error aborts the scan with ErrOutputFailed.
+func (s *Scanner) SetBatchCallback(callback func([]model.Entry) error) {
+	s.batch = callback
+}
+
+// ErrOutputFailed reports that the batch consumer rejected output; the scan
+// result is then incomplete and must not be presented as complete.
+var ErrOutputFailed = errors.New("scan output failed")
+
 type scanState struct {
 	scanner      *Scanner
 	result       *model.Scan
 	deadline     time.Time
 	progress     Progress
 	lastProgress time.Time
+	batchSent    int
 }
 
 func New(cfg config.Config) (*Scanner, error) {
@@ -156,15 +171,20 @@ func (s *Scanner) Scan(ctx context.Context) (model.Scan, error) {
 				state.truncate("cancelled")
 				cancelled = err
 			}
+			if errors.Is(err, ErrOutputFailed) {
+				return result, err
+			}
 			break
 		}
 		state.progress.RootsCompleted++
 		state.publish(true)
 	}
 
+	if err := state.flushBatch(true); err != nil {
+		return result, err
+	}
 	state.progress.Phase = PhaseClassifying
 	state.publish(true)
-	classify.Apply(result.Entries, now, s.Config)
 	state.progress.Phase = PhaseRelations
 	state.publish(true)
 	result.Relations = deriveRelations(result.Entries)
@@ -177,7 +197,6 @@ func (s *Scanner) Scan(ctx context.Context) (model.Scan, error) {
 }
 
 func (state *scanState) scanRoot(ctx context.Context, root, rootID string) error {
-	byPath := make(map[string]int)
 	wholeDrive := pathsafe.IsWholeDriveRoot(root)
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if reason := state.stopReason(ctx); reason != "" {
@@ -236,9 +255,6 @@ func (state *scanState) scanRoot(ctx context.Context, root, rootID string) error
 			return nil
 		}
 		if info.IsDir() && (excluded(info.Name(), state.scanner.Config.ExcludedNames) || wholeDrive && excluded(info.Name(), wholeDriveExcludedNames)) {
-			if info.Name() == ".git" {
-				markGitProject(root, filepath.Dir(path), info.ModTime(), byPath, state.result)
-			}
 			return filepath.SkipDir
 		}
 		if wholeDrive && !info.IsDir() && excluded(info.Name(), wholeDriveExcludedNames) {
@@ -290,15 +306,46 @@ func (state *scanState) scanRoot(ctx context.Context, root, rootID string) error
 		} else {
 			return nil
 		}
-		byPath[path] = len(state.result.Entries)
 		state.result.Entries = append(state.result.Entries, entry)
+		classify.One(&state.result.Entries[len(state.result.Entries)-1], state.result.StartedAt, state.scanner.Config)
+		if err := state.flushBatch(false); err != nil {
+			return err
+		}
 		state.publish(false)
 		return nil
 	})
-	if err != nil && !errors.Is(err, errStopScan) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+	if err != nil && !errors.Is(err, errStopScan) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, ErrOutputFailed) {
 		state.addError(fmt.Sprintf("walk stopped: %v", err))
 	}
 	return err
+}
+
+// batchFlushSize bounds how many classified entries accumulate before they
+// are handed to the streaming consumer. It also bounds the worst-case extra
+// memory a slow consumer forces the scanner to hold.
+const batchFlushSize = 512
+
+// flushBatch delivers newly classified entries to the batch callback. With
+// force=false it only fires once a full batch has accumulated; force=true
+// flushes the tail at the end of the scan.
+func (state *scanState) flushBatch(force bool) error {
+	if state.scanner.batch == nil {
+		return nil
+	}
+	pending := len(state.result.Entries) - state.batchSent
+	if pending <= 0 {
+		return nil
+	}
+	if !force && pending < batchFlushSize {
+		return nil
+	}
+	batch := make([]model.Entry, pending)
+	copy(batch, state.result.Entries[state.batchSent:])
+	state.batchSent += pending
+	if err := state.scanner.batch(batch); err != nil {
+		return fmt.Errorf("%w: %v", ErrOutputFailed, err)
+	}
+	return nil
 }
 
 func (state *scanState) stopReason(ctx context.Context) string {
@@ -354,18 +401,6 @@ func (state *scanState) publish(force bool) {
 	}
 	state.lastProgress = now
 	state.scanner.progress(state.progress)
-}
-
-func markGitProject(root, project string, gitTime time.Time, byPath map[string]int, result *model.Scan) {
-	if project == root {
-		return
-	}
-	if index, ok := byPath[project]; ok {
-		result.Entries[index].GitProject = true
-		if gitTime.After(result.Entries[index].ModTime) {
-			result.Entries[index].ModTime = gitTime
-		}
-	}
 }
 
 func hashFile(path string, stopReason func() string) (string, string, string) {
@@ -460,4 +495,11 @@ func opaqueID(parts ...string) string {
 		_, _ = io.WriteString(h, "\x00")
 	}
 	return hex.EncodeToString(h.Sum(nil)[:16])
+}
+
+// RootID returns the stable entry-namespace id a scan assigns to one
+// validated root. The broker uses it to check that returned entries only
+// reference roots the scan actually authorized.
+func RootID(validatedRoot string) string {
+	return opaqueID("root", validatedRoot)
 }

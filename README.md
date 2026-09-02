@@ -37,17 +37,17 @@ go build -tags production -trimpath `
   -ldflags="-H windowsgui -s -w" `
   -o build\windows\qijing.exe `
   .\cmd\qijing
+go build -tags production -trimpath `
+  -ldflags="-H windowsgui -s -w" `
+  -o build\windows\qijing-scanner.exe `
+  .\cmd\qijing-scanner
 ```
 
 `go.mod` 声明的是 **Go 1.26.3**，因为这是当前核实过的构建工具链，不是因为代码依赖某个 1.26 补丁特性。更低版本尚未做兼容认证。换图标时先改 `assets/appicon.png` 和 `internal/appicon/appicon.ico`，再跑 `go run .\cmd\icon-resource`。
 
 Go module 路径是 `github.com/kyfd/qijing`。
 
-独立扫描器（只往 stdout 打匿名结果）：
-
-```powershell
-go build -o dist\qijing-scanner.exe .\cmd\qijing-scanner
-```
+**扫描在独立进程中进行**：桌面程序通过本机 Named Pipe（只允许当前用户连接）驱动 `qijing-scanner.exe`，主进程退出时扫描进程随之退出。正式包和本地构建都需要把 `qijing-scanner.exe` 放在 `qijing.exe` 同目录；开发时也可以用环境变量 `QIJING_SCANNER_EXE` 指定路径。扫描进程不包含数据库、回收站或任何写文件能力，主进程会对它返回的每一条结果重新校验授权边界。
 
 ## 模型（可选）
 

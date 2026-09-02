@@ -16,18 +16,32 @@ import (
 	"github.com/kyfd/qijing/internal/pathsafe"
 	"github.com/kyfd/qijing/internal/platform"
 	"github.com/kyfd/qijing/internal/privacy"
-	"github.com/kyfd/qijing/internal/scanner"
+	"github.com/kyfd/qijing/internal/scanbroker"
 	"github.com/kyfd/qijing/internal/store"
 )
 
 var ErrNodeNotFound = errors.New("node not found")
 var ErrUnauthorized = errors.New("path is no longer authorized")
 
+// ScanEngine is the transport-independent scan capability the application
+// layer drives. Production engines run in the scanner subprocess; tests may
+// use the in-process scanner.
+type ScanEngine interface {
+	Scan(ctx context.Context) (model.Scan, error)
+}
+
+// ScanEngineFactory creates one engine for one validated configuration.
+type ScanEngineFactory func(cfg config.Config) (ScanEngine, error)
+
 type Options struct {
 	DataDir string
 	Context context.Context
 	Model   ModelClient
 	Secrets SecretStore
+	// ScanFactory overrides how scan engines are created. Production leaves
+	// it nil so scans run in the independent qijing-scanner subprocess via
+	// scanbroker; tests inject the in-process engine.
+	ScanFactory ScanEngineFactory
 }
 
 // Service is the transport- and desktop-independent application boundary.
@@ -60,7 +74,16 @@ func New(options Options) (*Service, error) {
 		db.Close()
 		return nil, fmt.Errorf("restore latest scan: %w", err)
 	}
-	factory := func(cfg config.Config) (scanEngine, error) { return scanner.New(cfg) }
+	factory := options.ScanFactory
+	if factory == nil {
+		factory = func(cfg config.Config) (ScanEngine, error) {
+			executable, err := scanbroker.ResolveScannerExecutable()
+			if err != nil {
+				return nil, err
+			}
+			return scanbroker.New(scanbroker.Options{Config: cfg, Executable: executable}), nil
+		}
+	}
 	svc := &Service{db: db, cfg: cfg, manager: newScanManager(options.Context, db, latest, factory), recycle: newRecycleManager()}
 	svc.agent = newAgentManager(db, options.Model, options.Secrets, filepath.Join(options.DataDir, "secrets"), svc.agentSnapshot)
 	return svc, nil

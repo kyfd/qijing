@@ -87,13 +87,13 @@ type ScanProgressDTO struct {
 }
 
 type StatusDTO struct {
-	Scanning        bool             `json:"scanning"`
-	State           ScanState        `json:"state"`
-	ScanID          string           `json:"scan_id,omitempty"`
-	TaskResult      string           `json:"task_result,omitempty"`
-	LastScan        string           `json:"last_scan"`
-	LastError       string           `json:"last_error,omitempty"`
-	Stats           StatsDTO         `json:"stats"`
+	Scanning   bool      `json:"scanning"`
+	State      ScanState `json:"state"`
+	ScanID     string    `json:"scan_id,omitempty"`
+	TaskResult string    `json:"task_result,omitempty"`
+	LastScan   string    `json:"last_scan"`
+	LastError  string    `json:"last_error,omitempty"`
+	Stats      StatsDTO  `json:"stats"`
 	// ScanReadOnly reports the scan pipeline's guarantee only. Recycling runs
 	// on a separate, individually confirmed endpoint.
 	ScanReadOnly    bool             `json:"scan_readonly"`

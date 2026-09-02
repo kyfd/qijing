@@ -139,7 +139,7 @@ cmd/qijing-preview/    仅开发调试的显式 HTTP 预览与 CLI，桌面版�
 cmd/qijing-scanner/    独立匿名只读扫描进程
 ```
 
-桌面生产构建必须包含 Wails 的 `production` tag，并使用 Windows GUI subsystem。若修改了 `internal\appicon\appicon.ico`，先重新生成资源对象；否则直接使用仓库内已生成的 amd64 资源：
+桌面生产构建必须包含 Wails 的 `production` tag，并使用 Windows GUI subsystem。扫描在独立进程 `qijing-scanner.exe` 中执行，开发运行桌面程序前先把它构建到 `qijing.exe` 同目录（或用 `QIJING_SCANNER_EXE` 指定路径），否则启动扫描会得到明确报错，而不是静默回退到进程内扫描。若修改了 `internal\appicon\appicon.ico`，先重新生成资源对象；否则直接使用仓库内已生成的 amd64 资源：
 
 ```powershell
 New-Item -ItemType Directory -Force .\build\windows | Out-Null

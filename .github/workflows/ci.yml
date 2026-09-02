@@ -26,17 +26,28 @@ jobs:
       - name: Production-tag tests
         run: go test -tags production ./...
 
+      - name: Race tests
+        run: go test -race ./internal/scanbroker ./internal/scanproto ./internal/scannerproc ./internal/ipcpipe ./internal/appdir
+
       - name: Path-safety tests
-        run: go test ./internal/pathsafe ./internal/privacy ./internal/scanner ./internal/platform -count=1 -v
+        run: go test ./internal/pathsafe ./internal/privacy ./internal/scanner ./internal/platform ./internal/scanbroker -count=1 -v
+
+      - name: Scanner subprocess end-to-end
+        run: go test ./internal/scanbroker -run TestBrokerRunsRealScannerProcess -count=1 -v
 
       - name: Build desktop zip
+        shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path build\windows | Out-Null
           go build -tags production -trimpath `
             -ldflags="-H windowsgui -s -w" `
             -o build\windows\qijing.exe `
             .\cmd\qijing
-          Compress-Archive -Path build\windows\qijing.exe,README.md,docs\privacy.md `
+          go build -tags production -trimpath `
+            -ldflags="-H windowsgui -s -w" `
+            -o build\windows\qijing-scanner.exe `
+            .\cmd\qijing-scanner
+          Compress-Archive -Path build\windows\qijing.exe,build\windows\qijing-scanner.exe,README.md,docs\privacy.md `
             -DestinationPath build\windows\qijing-windows-amd64.zip -Force
           Get-FileHash -Algorithm SHA256 build\windows\qijing-windows-amd64.zip |
             ForEach-Object { "{0}  qijing-windows-amd64.zip" -f $_.Hash.ToLower() } |

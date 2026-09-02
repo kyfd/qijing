@@ -22,6 +22,9 @@ type Options struct {
 	Addr    string
 	Logger  *slog.Logger
 	Secrets application.SecretStore
+	// ScanFactory is forwarded to the application layer; production leaves
+	// it nil so scans run in the scanner subprocess.
+	ScanFactory application.ScanEngineFactory
 }
 
 type Server struct {
@@ -46,7 +49,7 @@ func New(options Options) (*Server, error) {
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
-	app, err := application.New(application.Options{DataDir: options.DataDir, Context: context.Background(), Secrets: options.Secrets})
+	app, err := application.New(application.Options{DataDir: options.DataDir, Context: context.Background(), Secrets: options.Secrets, ScanFactory: options.ScanFactory})
 	if err != nil {
 		return nil, err
 	}

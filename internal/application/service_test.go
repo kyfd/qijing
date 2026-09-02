@@ -22,6 +22,13 @@ import (
 // The map draws only the largest entries while stats cover the whole scan.
 // That gap must be reported, otherwise the canvas silently implies it is
 // showing everything.
+
+// inProcessScanFactory keeps scan-logic tests on the in-process engine; the
+// subprocess broker has its own test suite in internal/scanbroker.
+func inProcessScanFactory(cfg config.Config) (ScanEngine, error) {
+	return scanner.New(cfg)
+}
+
 func TestBuildNodesReportsTruncation(t *testing.T) {
 	entries := make([]model.Entry, mapNodeLimit+25)
 	for i := range entries {
@@ -77,7 +84,7 @@ func TestZoneForPrefersSpecificClassOverDormant(t *testing.T) {
 }
 
 func TestAuthorizeRootsIsAtomicAndReportsInvalidPaths(t *testing.T) {
-	service, err := New(Options{DataDir: t.TempDir()})
+	service, err := New(Options{DataDir: t.TempDir(), ScanFactory: inProcessScanFactory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +112,7 @@ func TestAuthorizeRootsIsAtomicAndReportsInvalidPaths(t *testing.T) {
 }
 
 func TestAuthorizeRootsCollapsesParentsDuplicatesAndStartsScan(t *testing.T) {
-	service, err := New(Options{DataDir: t.TempDir()})
+	service, err := New(Options{DataDir: t.TempDir(), ScanFactory: inProcessScanFactory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +145,7 @@ func TestAuthorizeRootsCollapsesParentsDuplicatesAndStartsScan(t *testing.T) {
 }
 
 func TestAuthorizeRootsExistingDescendantReplacedByParent(t *testing.T) {
-	service, err := New(Options{DataDir: t.TempDir()})
+	service, err := New(Options{DataDir: t.TempDir(), ScanFactory: inProcessScanFactory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +173,7 @@ func TestServicePersistsRootsAndRestoresLatestScan(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("hello"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	service, err := New(Options{DataDir: dataDir})
+	service, err := New(Options{DataDir: dataDir, ScanFactory: inProcessScanFactory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +194,7 @@ func TestServicePersistsRootsAndRestoresLatestScan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restarted, err := New(Options{DataDir: dataDir})
+	restarted, err := New(Options{DataDir: dataDir, ScanFactory: inProcessScanFactory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +209,7 @@ func TestServicePersistsRootsAndRestoresLatestScan(t *testing.T) {
 }
 
 func TestRootMutationIsRejectedWhileScanRuns(t *testing.T) {
-	service, err := New(Options{DataDir: t.TempDir()})
+	service, err := New(Options{DataDir: t.TempDir(), ScanFactory: inProcessScanFactory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +218,7 @@ func TestRootMutationIsRejectedWhileScanRuns(t *testing.T) {
 	if _, err := service.AddRoot(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
-	service.manager.factory = func(config.Config) (scanEngine, error) {
+	service.manager.factory = func(config.Config) (ScanEngine, error) {
 		return &blockingEngine{started: make(chan struct{})}, nil
 	}
 	if _, err := service.StartScan(context.Background()); err != nil {
@@ -243,7 +250,7 @@ func TestScanManagerDetachedSingleCancelAndFailureKeepsSnapshot(t *testing.T) {
 	}
 	started := make(chan struct{})
 	engine := &blockingEngine{started: started}
-	manager := newScanManager(context.Background(), db, old, func(config.Config) (scanEngine, error) { return engine, nil })
+	manager := newScanManager(context.Background(), db, old, func(config.Config) (ScanEngine, error) { return engine, nil })
 
 	// ScanManager accepts only the application-owned context, so a caller's
 	// cancelled request cannot be retained by Start.
@@ -285,7 +292,7 @@ func TestScanManagerCloseIsBounded(t *testing.T) {
 	}
 	defer db.Close()
 	engine := &stubbornEngine{release: make(chan struct{})}
-	manager := newScanManager(context.Background(), db, model.Scan{}, func(config.Config) (scanEngine, error) { return engine, nil })
+	manager := newScanManager(context.Background(), db, model.Scan{}, func(config.Config) (ScanEngine, error) { return engine, nil })
 	if _, err := manager.Start(config.Config{Roots: []string{t.TempDir()}}); err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +328,7 @@ func TestScanManagerProgressIsTaskIDSafe(t *testing.T) {
 	}
 	defer db.Close()
 	engine := &reportingEngine{release: make(chan struct{})}
-	manager := newScanManager(context.Background(), db, model.Scan{ID: "old"}, func(config.Config) (scanEngine, error) { return engine, nil })
+	manager := newScanManager(context.Background(), db, model.Scan{ID: "old"}, func(config.Config) (ScanEngine, error) { return engine, nil })
 	started, err := manager.Start(config.Config{Roots: []string{t.TempDir()}})
 	if err != nil {
 		t.Fatal(err)

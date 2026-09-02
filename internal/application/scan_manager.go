@@ -20,15 +20,11 @@ var (
 	ErrNotRunning  = errors.New("no scan running")
 )
 
-type scanEngine interface {
-	Scan(context.Context) (model.Scan, error)
-}
-
 type progressEngine interface {
 	SetProgressCallback(func(scanner.Progress))
 }
 
-type scannerFactory func(config.Config) (scanEngine, error)
+type scannerFactory = ScanEngineFactory
 
 // ScanManager owns scan task lifetime independently of callers and windows.
 type ScanManager struct {
@@ -94,7 +90,7 @@ func (m *ScanManager) Start(cfg config.Config) (StartScanDTO, error) {
 	return StartScanDTO{Accepted: true, ScanID: id}, nil
 }
 
-func (m *ScanManager) run(ctx context.Context, taskID string, engine scanEngine) {
+func (m *ScanManager) run(ctx context.Context, taskID string, engine ScanEngine) {
 	result, err := engine.Scan(ctx)
 	cancelled := errors.Is(err, context.Canceled) || errors.Is(err, scanner.ErrCancelled) || result.Status == model.ScanStatusCancelled
 	if err == nil && !cancelled {
