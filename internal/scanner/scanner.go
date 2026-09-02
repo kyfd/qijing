@@ -71,9 +71,15 @@ type Scanner struct {
 	Config config.Config
 	Now    func() time.Time
 
-	progress func(Progress)
-	batch    func([]model.Entry) error
+	progress   func(Progress)
+	batch      func([]model.Entry) error
+	snapshotID string
 }
+
+// SetSnapshotID presets the scan's identifier. The broker owns the snapshot
+// id because it opens the staging snapshot before the first entry arrives;
+// when unset the scan generates one itself.
+func (s *Scanner) SetSnapshotID(id string) { s.snapshotID = id }
 
 // SetProgressCallback installs the scan's snapshot receiver. Scanner invokes
 // it synchronously and never exposes the mutable Scan under construction.
@@ -114,9 +120,12 @@ func New(cfg config.Config) (*Scanner, error) {
 func (s *Scanner) Scan(ctx context.Context) (model.Scan, error) {
 	now := s.Now()
 	result := model.Scan{
-		ID:        opaqueID("scan", fmt.Sprint(now.UnixNano())),
+		ID:        s.snapshotID,
 		StartedAt: now,
 		Status:    model.ScanStatusComplete,
+	}
+	if result.ID == "" {
+		result.ID = opaqueID("scan", fmt.Sprint(now.UnixNano()))
 	}
 	state := scanState{
 		scanner: s,

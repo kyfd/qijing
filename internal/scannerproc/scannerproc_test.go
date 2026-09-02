@@ -24,15 +24,17 @@ func init() { closeGrace = 100 * time.Millisecond }
 // fakeEngine records what the serve loop asked for and replays scripted
 // behaviour.
 type fakeEngine struct {
-	cfg     config.Config
-	result  model.Scan
-	err     error
-	block   chan struct{} // when set, Run blocks until closed or ctx done
-	batches int
+	cfg        config.Config
+	snapshotID string
+	result     model.Scan
+	err        error
+	block      chan struct{} // when set, Run blocks until closed or ctx done
+	batches    int
 }
 
-func (f *fakeEngine) Run(ctx context.Context, cfg config.Config, progress func(scanner.Progress), batch func([]model.Entry) error) (model.Scan, error) {
+func (f *fakeEngine) Run(ctx context.Context, cfg config.Config, snapshotID string, progress func(scanner.Progress), batch func([]model.Entry) error) (model.Scan, error) {
 	f.cfg = cfg
+	f.snapshotID = snapshotID
 	progress(scanner.Progress{Phase: scanner.PhaseTraversing, ObservedEntries: 1})
 	entry := model.Entry{ID: "e1", RootID: scanner.RootID(cfg.Roots[0]), Path: cfg.Roots[0] + `\a.txt`, Kind: model.KindFile, Size: 3, ModTime: now()}
 	classify.One(&entry, now(), cfg)
@@ -44,14 +46,14 @@ func (f *fakeEngine) Run(ctx context.Context, cfg config.Config, progress func(s
 		select {
 		case <-f.block:
 		case <-ctx.Done():
-			return model.Scan{ID: "scan-1", Status: model.ScanStatusCancelled, Partial: true, TruncationReason: "cancelled", Roots: cfg.Roots}, ctx.Err()
+			return model.Scan{ID: snapshotID, Status: model.ScanStatusCancelled, Partial: true, TruncationReason: "cancelled", Roots: cfg.Roots}, ctx.Err()
 		}
 	}
 	progress(scanner.Progress{Phase: scanner.PhaseRelations, ObservedEntries: 2})
 	if f.err != nil {
 		return model.Scan{}, f.err
 	}
-	f.result = model.Scan{ID: "scan-1", Status: model.ScanStatusComplete, Roots: []string{cfg.Roots[0]}, ErrorCount: 0}
+	f.result = model.Scan{ID: snapshotID, Status: model.ScanStatusComplete, Roots: []string{cfg.Roots[0]}, ErrorCount: 0}
 	return f.result, nil
 }
 
@@ -98,7 +100,7 @@ func handshake(t *testing.T, client *scanproto.Conn, version int, jobID string) 
 
 func sendScan(t *testing.T, client *scanproto.Conn, jobID string, roots []string) {
 	t.Helper()
-	if err := client.Send(scanproto.Message{Type: scanproto.TypeScan, Scan: &scanproto.ScanRequest{JobID: jobID, Roots: roots, Options: scanproto.OptionsFromConfig(config.Default())}}); err != nil {
+	if err := client.Send(scanproto.Message{Type: scanproto.TypeScan, Scan: &scanproto.ScanRequest{JobID: jobID, SnapshotID: "snapshot-1", Roots: roots, Options: scanproto.OptionsFromConfig(config.Default())}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -145,7 +147,7 @@ func TestServeStreamsBatchesProgressAndDone(t *testing.T) {
 	if relations != 0 {
 		t.Fatalf("relations = %d", relations)
 	}
-	if done == nil || done.ScanID != "scan-1" || done.Status != model.ScanStatusComplete || len(done.Roots) != 1 {
+	if done == nil || done.ScanID != "snapshot-1" || done.Status != model.ScanStatusComplete || len(done.Roots) != 1 {
 		t.Fatalf("done = %+v", done)
 	}
 	if err := <-served; err != nil {
@@ -153,6 +155,9 @@ func TestServeStreamsBatchesProgressAndDone(t *testing.T) {
 	}
 	if engine.cfg.MaxEntries != config.Default().MaxEntries {
 		t.Fatalf("engine config = %+v", engine.cfg)
+	}
+	if engine.snapshotID == "" {
+		t.Fatal("the scan request must carry the broker's snapshot id")
 	}
 }
 
@@ -195,7 +200,7 @@ func TestServeRejectsInvalidScanConfiguration(t *testing.T) {
 
 func TestServeForwardsCancelAndReportsCancelledDone(t *testing.T) {
 	blocked := make(chan struct{})
-	engine := &fakeEngine{block: blocked}
+	engine := &fakeEngine{block: blocked, result: model.Scan{ID: "snapshot-1", Roots: nil}}
 	client, served := serveOnPipe(t, engine, time.Hour)
 	handshake(t, client, scanproto.Version, "job-1")
 	sendScan(t, client, "job-1", []string{t.TempDir()})

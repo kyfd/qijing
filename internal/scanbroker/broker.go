@@ -6,6 +6,8 @@ package scanbroker
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -38,6 +40,34 @@ const (
 // deliberately carries no path material.
 var errViolation = errors.New("scanner returned data outside the authorized roots")
 
+// SinkError marks a sink failure with a sanitized code for the audit trail.
+// Codes travel into the snapshot record; they never contain path material.
+type SinkError struct {
+	Code string
+	Err  error
+}
+
+func (e *SinkError) Error() string { return e.Err.Error() }
+func (e *SinkError) Unwrap() error { return e.Err }
+
+// Sink receives streamed scan output. The broker calls it from its
+// conversation goroutine, so a slow implementation applies backpressure all
+// the way to the scanner process instead of growing memory.
+type Sink interface {
+	// BeginStaging opens the staging snapshot before the first entry is
+	// written; the previous complete snapshot is untouched.
+	BeginStaging(ctx context.Context, snapshotID string, roots []string) error
+	// WriteEntries persists one classified batch.
+	WriteEntries(ctx context.Context, snapshotID string, entries []model.Entry) error
+	// Finalize commits the final status, counters, relations and errors;
+	// the snapshot becomes a scan result only when this succeeds.
+	Finalize(ctx context.Context, scan model.Scan) error
+	// Abandon downgrades the staging snapshot to an incomplete record:
+	// streamed entries are discarded, the previous complete snapshot is
+	// untouched.
+	Abandon(ctx context.Context, snapshotID string, reason string) error
+}
+
 // Options configures one subprocess scan.
 type Options struct {
 	// Executable is the qijing-scanner binary to spawn.
@@ -48,6 +78,10 @@ type Options struct {
 	Config config.Config
 	// Progress receives scanner progress snapshots.
 	Progress func(scanner.Progress)
+	// Sink receives the streamed scan output. When nil, the result is only
+	// returned in memory and the caller persists it (tests use this; the
+	// application wires the store-backed sink).
+	Sink Sink
 
 	ConnectTimeout   time.Duration
 	HeartbeatTimeout time.Duration
@@ -77,9 +111,15 @@ func New(opts Options) *Scan {
 	return &Scan{opts: opts}
 }
 
+// PersistsOwnResults reports that, when a Sink is wired, the scan output is
+// persisted by the broker itself and the caller must not save it again.
+func (s *Scan) PersistsOwnResults() bool { return s.opts.Sink != nil }
+
 // Scan spawns qijing-scanner, drives the conversation and assembles the
-// model.Scan. On any failure the subprocess is terminated and the error is
-// returned; an already-stored snapshot is never touched on this path.
+// model.Scan. Output streams into the Sink: a staging snapshot is opened
+// before the first entry and finalized only on success; on any failure it
+// is downgraded to an incomplete record. An already-stored snapshot is
+// never touched on failure paths.
 func (s *Scan) Scan(ctx context.Context) (model.Scan, error) {
 	// Re-validate roots on the broker side before anything is spawned. The
 	// scanner re-validates too; neither side trusts the other.
@@ -92,6 +132,33 @@ func (s *Scan) Scan(ctx context.Context) (model.Scan, error) {
 		roots = append(roots, validated)
 	}
 
+	// The broker owns the snapshot id: the staging row must exist before
+	// the first entry arrives.
+	snapshotID, err := randomSnapshotID()
+	if err != nil {
+		return model.Scan{}, err
+	}
+	return s.spawnAndConverse(ctx, snapshotID, roots)
+}
+
+// sinkReason maps a failure to a sanitized audit code.
+func sinkReason(err error) string {
+	var sinkErr *SinkError
+	if errors.As(err, &sinkErr) {
+		return sinkErr.Code
+	}
+	return "error"
+}
+
+func randomSnapshotID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate snapshot id: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+func (s *Scan) spawnAndConverse(ctx context.Context, snapshotID string, roots []string) (model.Scan, error) {
 	name, err := ipcpipe.RandomName()
 	if err != nil {
 		return model.Scan{}, err
@@ -120,7 +187,7 @@ func (s *Scan) Scan(ctx context.Context) (model.Scan, error) {
 	if err != nil {
 		return model.Scan{}, err
 	}
-	return s.converse(ctx, conn, roots, func() { s.terminate(cmd) })
+	return s.converse(ctx, conn, roots, snapshotID, func() { s.terminate(cmd) })
 }
 
 // terminate kills and reaps the subprocess if it is still running.
@@ -132,7 +199,12 @@ func (s *Scan) terminate(cmd *exec.Cmd) {
 	_, _ = cmd.Process.Wait()
 }
 
-func (s *Scan) converse(ctx context.Context, conn ipcpipe.Conn, roots []string, kill func()) (model.Scan, error) {
+func (s *Scan) converse(ctx context.Context, conn ipcpipe.Conn, roots []string, snapshotID string, kill func()) (model.Scan, error) {
+	if s.opts.Sink != nil {
+		if err := s.opts.Sink.BeginStaging(ctx, snapshotID, roots); err != nil {
+			return model.Scan{}, fmt.Errorf("open staging snapshot: %w", err)
+		}
+	}
 	stream := scanproto.NewConn(conn)
 	jobID := fmt.Sprintf("scan-%d", time.Now().UnixNano())
 
@@ -174,29 +246,51 @@ func (s *Scan) converse(ctx context.Context, conn ipcpipe.Conn, roots []string, 
 	}()
 
 	go func() {
-		scan, err := s.talk(stream, jobID, roots, &lastFrame)
+		scan, err := s.talk(ctx, stream, jobID, snapshotID, roots, &lastFrame)
 		doneCh <- outcome{scan, err}
 	}()
 
 	select {
 	case result := <-doneCh:
+		if result.err != nil {
+			if s.opts.Sink != nil {
+				_ = s.opts.Sink.Abandon(ctx, snapshotID, sinkReason(result.err))
+			}
+			return result.scan, result.err
+		}
+		if result.scan.Status == model.ScanStatusCancelled && s.opts.Sink != nil {
+			_ = s.opts.Sink.Abandon(ctx, snapshotID, "cancelled")
+		}
 		return result.scan, result.err
 	case <-ctx.Done():
 		// Let the watchdog run the cancel sequence, then collect whatever
 		// partial state the scanner reported before termination.
 		select {
 		case result := <-doneCh:
+			if result.err != nil {
+				if s.opts.Sink != nil {
+					_ = s.opts.Sink.Abandon(ctx, snapshotID, sinkReason(result.err))
+				}
+				return result.scan, result.err
+			}
+			if result.scan.Status == model.ScanStatusCancelled && s.opts.Sink != nil {
+				_ = s.opts.Sink.Abandon(ctx, snapshotID, "cancelled")
+			}
 			return result.scan, result.err
 		case <-time.After(s.opts.CancelGrace + 5*time.Second):
 			kill()
-			return model.Scan{}, fmt.Errorf("scanner did not acknowledge cancellation: %w", ctx.Err())
+			err := fmt.Errorf("scanner did not acknowledge cancellation: %w", ctx.Err())
+			if s.opts.Sink != nil {
+				_ = s.opts.Sink.Abandon(ctx, snapshotID, sinkReason(err))
+			}
+			return model.Scan{}, err
 		}
 	}
 }
 
 // talk performs the handshake and consumes messages until Done, a fatal
 // error or the connection breaks.
-func (s *Scan) talk(stream *scanproto.Conn, jobID string, roots []string, lastFrame *atomic.Int64) (model.Scan, error) {
+func (s *Scan) talk(ctx context.Context, stream *scanproto.Conn, jobID, snapshotID string, roots []string, lastFrame *atomic.Int64) (model.Scan, error) {
 	if err := stream.Send(scanproto.Message{Type: scanproto.TypeHello, Hello: &scanproto.Hello{Version: scanproto.Version, JobID: jobID}}); err != nil {
 		return model.Scan{}, fmt.Errorf("scanner handshake: %w", err)
 	}
@@ -208,9 +302,10 @@ func (s *Scan) talk(stream *scanproto.Conn, jobID string, roots []string, lastFr
 		return model.Scan{}, fmt.Errorf("%w: scanner protocol version mismatch", scanproto.ErrProtocol)
 	}
 	if err := stream.Send(scanproto.Message{Type: scanproto.TypeScan, Scan: &scanproto.ScanRequest{
-		JobID:   jobID,
-		Roots:   append([]string(nil), roots...),
-		Options: scanproto.OptionsFromConfig(s.opts.Config),
+		JobID:      jobID,
+		SnapshotID: snapshotID,
+		Roots:      append([]string(nil), roots...),
+		Options:    scanproto.OptionsFromConfig(s.opts.Config),
 	}}); err != nil {
 		return model.Scan{}, err
 	}
@@ -243,12 +338,29 @@ func (s *Scan) talk(stream *scanproto.Conn, jobID string, roots []string, lastFr
 				}
 				out.Entries = append(out.Entries, entry)
 			}
+			// The validated batch streams straight to the sink; a slow sink
+			// blocks this loop, which blocks the IPC, which slows the
+			// scanner: bounded memory, honest backpressure.
+			if s.opts.Sink != nil {
+				if err := s.opts.Sink.WriteEntries(ctx, snapshotID, message.Entries.Entries); err != nil {
+					return model.Scan{}, fmt.Errorf("persist scan output: %w", err)
+				}
+			}
 		case scanproto.TypeRelations:
 			out.Relations = append(out.Relations, message.Relations.Relations...)
 		case scanproto.TypeFatal:
 			return model.Scan{}, fmt.Errorf("scanner aborted: %s: %s", message.Fatal.Code, message.Fatal.Detail)
 		case scanproto.TypeDone:
-			return s.finish(out, message.Done, roots)
+			scan, err := s.finish(out, message.Done, roots)
+			if err != nil {
+				return model.Scan{}, err
+			}
+			if s.opts.Sink != nil {
+				if err := s.opts.Sink.Finalize(ctx, scan); err != nil {
+					return model.Scan{}, fmt.Errorf("persist scan output: %w", err)
+				}
+			}
+			return scan, nil
 		default:
 			return model.Scan{}, fmt.Errorf("%w: unexpected message %q", scanproto.ErrProtocol, message.Type)
 		}

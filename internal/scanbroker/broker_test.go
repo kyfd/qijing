@@ -103,7 +103,7 @@ func TestBrokerAssemblesCompleteScan(t *testing.T) {
 	var progressSeen bool
 	s.opts.Progress = func(scanner.Progress) { progressSeen = true }
 
-	scan, err := s.converse(context.Background(), dialForTest(t, pipe), []string{root}, func() {})
+	scan, err := s.converse(context.Background(), dialForTest(t, pipe), []string{root}, "snap-test", func() {})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestBrokerRejectsPathOutsideAuthorizedRoots(t *testing.T) {
 		}}}})
 	})
 	s := newBroker(t, root, nil)
-	_, err := s.converse(context.Background(), dialForTest(t, pipe), []string{root}, func() {})
+	_, err := s.converse(context.Background(), dialForTest(t, pipe), []string{root}, "snap-test", func() {})
 	if !errors.Is(err, errViolation) {
 		t.Fatalf("expected violation error, got %v", err)
 	}
@@ -144,7 +144,7 @@ func TestBrokerRejectsUnknownRootID(t *testing.T) {
 		}}}})
 	})
 	s := newBroker(t, root, nil)
-	_, err := s.converse(context.Background(), dialForTest(t, pipe), []string{root}, func() {})
+	_, err := s.converse(context.Background(), dialForTest(t, pipe), []string{root}, "snap-test", func() {})
 	if !errors.Is(err, errViolation) {
 		t.Fatalf("expected violation error, got %v", err)
 	}
@@ -158,7 +158,7 @@ func TestBrokerRejectsRelativePath(t *testing.T) {
 		}}}})
 	})
 	s := newBroker(t, root, nil)
-	_, err := s.converse(context.Background(), dialForTest(t, pipe), []string{root}, func() {})
+	_, err := s.converse(context.Background(), dialForTest(t, pipe), []string{root}, "snap-test", func() {})
 	if !errors.Is(err, errViolation) {
 		t.Fatalf("expected violation error, got %v", err)
 	}
@@ -170,7 +170,7 @@ func TestBrokerSurvivesAbruptScannerDeath(t *testing.T) {
 	// immediately, like a crashed scanner process.
 	pipe := scriptedScanner(t, func(stream *scanproto.Conn) {})
 	s := newBroker(t, root, nil)
-	_, err := s.converse(context.Background(), dialForTest(t, pipe), []string{root}, func() {})
+	_, err := s.converse(context.Background(), dialForTest(t, pipe), []string{root}, "snap-test", func() {})
 	if err == nil {
 		t.Fatal("expected an error from a scanner that died mid-conversation")
 	}
@@ -190,7 +190,7 @@ func TestBrokerHeartbeatTimeoutTerminatesSilentScanner(t *testing.T) {
 		o.HeartbeatTimeout = 300 * time.Millisecond
 	})
 	start := time.Now()
-	_, err := s.converse(context.Background(), dialForTest(t, pipe), []string{root}, func() {})
+	_, err := s.converse(context.Background(), dialForTest(t, pipe), []string{root}, "snap-test", func() {})
 	if err == nil {
 		t.Fatal("expected the heartbeat timeout to abort the scan")
 	}
@@ -226,7 +226,7 @@ func TestBrokerCancelStopsScanAndReportsCancelledStatus(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 		cancel()
 	}()
-	scan, err := s.converse(ctx, dialForTest(t, pipe), []string{root}, func() {})
+	scan, err := s.converse(ctx, dialForTest(t, pipe), []string{root}, "snap-test", func() {})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestBrokerEnforcesEntryBudgetAgainstRogueScanner(t *testing.T) {
 	s := newBroker(t, root, func(o *Options) {
 		o.Config.MaxEntries = 100
 	})
-	_, err := s.converse(context.Background(), dialForTest(t, pipe), []string{root}, func() {})
+	_, err := s.converse(context.Background(), dialForTest(t, pipe), []string{root}, "snap-test", func() {})
 	if !errors.Is(err, errViolation) {
 		t.Fatalf("expected budget violation, got %v", err)
 	}

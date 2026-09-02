@@ -40,7 +40,10 @@ func (s *Store) Close() error { return s.db.Close() }
 // LatestScan restores the most recently completed immutable snapshot.
 func (s *Store) LatestScan(ctx context.Context) (model.Scan, error) {
 	var id string
-	if err := s.db.QueryRowContext(ctx, `SELECT id FROM scans WHERE status <> ? ORDER BY ended_at DESC, rowid DESC LIMIT 1`, model.ScanStatusCancelled).Scan(&id); err != nil {
+	// Staging and incomplete snapshots are never scan results: the most
+	// recent complete snapshot stays visible while a new scan streams.
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM scans WHERE status NOT IN (?,?,?) ORDER BY ended_at DESC, rowid DESC LIMIT 1`,
+		SnapshotStatusStaging, SnapshotStatusIncomplete, model.ScanStatusCancelled).Scan(&id); err != nil {
 		return model.Scan{}, err
 	}
 	return s.Scan(ctx, id)
@@ -132,10 +135,25 @@ CREATE TABLE IF NOT EXISTS suggestions(id INTEGER PRIMARY KEY AUTOINCREMENT, sca
 		 confirmed_at TEXT NOT NULL, recycled_at TEXT NOT NULL, outcome TEXT NOT NULL, error TEXT NOT NULL DEFAULT ''
 		);
 		CREATE INDEX IF NOT EXISTS recycled_items_recycled_at ON recycled_items(recycled_at DESC);`,
+	// Streaming scans: a job record per broker run and an index that lets
+	// startup find leftover staging snapshots quickly.
+	`CREATE TABLE IF NOT EXISTS scan_jobs(
+		 id TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL, roots TEXT NOT NULL,
+		 state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS scans_status ON scans(status);
+		CREATE INDEX IF NOT EXISTS entries_scan_id ON entries(scan_id);`,
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
-	for index, migration := range migrations {
+	return s.applyMigrations(ctx, migrations)
+}
+
+// applyMigrations runs the supplied migration list; it is separate so tests
+// can recreate a database at an older schema version (N-1 / N-2 upgrade
+// tests).
+func (s *Store) applyMigrations(ctx context.Context, list []string) error {
+	for index, migration := range list {
 		version := index + 1
 		var exists int
 		err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version=?`, version).Scan(&exists)

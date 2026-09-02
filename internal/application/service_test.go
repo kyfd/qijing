@@ -29,6 +29,104 @@ func inProcessScanFactory(cfg config.Config) (ScanEngine, error) {
 	return scanner.New(cfg)
 }
 
+// persistingEngine mimics the broker contract: it reports that it persists
+// its own results so the manager must not SaveScan again.
+type persistingEngine struct {
+	engine ScanEngine
+}
+
+func (p persistingEngine) Scan(ctx context.Context) (model.Scan, error) {
+	return p.engine.Scan(ctx)
+}
+func (p persistingEngine) PersistsOwnResults() bool { return true }
+
+// The manager must not save a second snapshot for engines that stream into
+// their own store sink. A conflicting pre-existing row would make a
+// duplicate SaveScan fail and surface as lastErr.
+func TestScanManagerDoesNotDoubleSavePersistingEngines(t *testing.T) {
+	service, err := New(Options{DataDir: t.TempDir(), ScanFactory: inProcessScanFactory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeService(t, service)
+	root := t.TempDir()
+	if _, err := service.AddRoot(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	// A row with the id the engine will return; a duplicate save would fail.
+	seed := model.Scan{ID: "engine-snapshot", StartedAt: time.Now(), EndedAt: time.Now(), Status: model.ScanStatusComplete}
+	if err := service.db.SaveScan(context.Background(), seed); err != nil {
+		t.Fatal(err)
+	}
+	service.manager.mu.Lock()
+	service.manager.factory = func(cfg config.Config) (ScanEngine, error) {
+		return persistingEngine{engine: mustScanner(t, cfg)}, nil
+	}
+	service.manager.mu.Unlock()
+	if _, err := service.StartScan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, service)
+	_, state, _, taskResult, lastErr, _, _ := service.manager.snapshot()
+	if lastErr != "" {
+		t.Fatalf("engine-persisted results must not be saved again: %q", lastErr)
+	}
+	if state != ScanIdle || taskResult != model.ScanStatusComplete {
+		t.Fatalf("task = %q/%q", state, taskResult)
+	}
+}
+
+// Startup must downgrade leftover staging snapshots before anything can
+// present them as results.
+func TestStartupPurgesLeftoverStagingSnapshots(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	root := t.TempDir()
+	service, err := New(Options{DataDir: dataDir, ScanFactory: inProcessScanFactory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.AddRoot(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.StartScan(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, service)
+	// Simulate a crashed run's staging snapshot.
+	if err := service.db.BeginStagingScan(ctx, "stale-snap", []string{"root-x"}, "job-stale"); err != nil {
+		t.Fatal(err)
+	}
+	closeCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if err := service.Close(closeCtx); err != nil {
+		t.Fatal(err)
+	}
+
+	purged := 0
+	restarted, err := New(Options{DataDir: dataDir, ScanFactory: inProcessScanFactory, OnStartupCleanup: func(count int) { purged = count }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeService(t, restarted)
+	if purged != 1 {
+		t.Fatalf("startup purged %d staging snapshots, want 1", purged)
+	}
+	// The finished snapshot of the previous run stays readable.
+	if _, err := restarted.db.LatestScan(ctx); err != nil {
+		t.Fatalf("previous complete snapshot must survive: %v", err)
+	}
+}
+
+func mustScanner(t *testing.T, cfg config.Config) ScanEngine {
+	t.Helper()
+	engine, err := scanner.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return engine
+}
+
 func TestBuildNodesReportsTruncation(t *testing.T) {
 	entries := make([]model.Entry, mapNodeLimit+25)
 	for i := range entries {

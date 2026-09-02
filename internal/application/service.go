@@ -42,6 +42,9 @@ type Options struct {
 	// it nil so scans run in the independent qijing-scanner subprocess via
 	// scanbroker; tests inject the in-process engine.
 	ScanFactory ScanEngineFactory
+	// OnStartupCleanup receives the number of leftover staging snapshots
+	// purged during startup; production forwards it to the local log.
+	OnStartupCleanup func(count int)
 }
 
 // Service is the transport- and desktop-independent application boundary.
@@ -62,6 +65,15 @@ func New(options Options) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
+	// No scan survives a process restart: leftover staging snapshots from a
+	// crash or hard kill are downgraded to incomplete records here, before
+	// anything can present them as results.
+	if purged, err := db.PurgeStagingScans(context.Background()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("clean staging snapshots: %w", err)
+	} else if purged > 0 {
+		options.OnStartupCleanup(purged)
+	}
 	cfg := config.Default()
 	roots, err := db.AuthorizedRoots(context.Background())
 	if err != nil {
@@ -76,12 +88,13 @@ func New(options Options) (*Service, error) {
 	}
 	factory := options.ScanFactory
 	if factory == nil {
+		sink := newScanSink(db, options.DataDir)
 		factory = func(cfg config.Config) (ScanEngine, error) {
 			executable, err := scanbroker.ResolveScannerExecutable()
 			if err != nil {
 				return nil, err
 			}
-			return scanbroker.New(scanbroker.Options{Config: cfg, Executable: executable}), nil
+			return scanbroker.New(scanbroker.Options{Config: cfg, Executable: executable, Sink: sink}), nil
 		}
 	}
 	svc := &Service{db: db, cfg: cfg, manager: newScanManager(options.Context, db, latest, factory), recycle: newRecycleManager()}

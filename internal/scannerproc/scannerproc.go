@@ -22,21 +22,23 @@ import (
 
 // Engine is the capability surface the serve loop needs from a scanner.
 type Engine interface {
-	// Run executes one scan. Progress snapshots and classified entry
-	// batches stream through the callbacks; the returned Scan additionally
-	// carries roots, errors and relations for the final Done message.
-	Run(ctx context.Context, cfg config.Config, progress func(scanner.Progress), batch func([]model.Entry) error) (model.Scan, error)
+	// Run executes one scan identified by snapshotID. Progress snapshots
+	// and classified entry batches stream through the callbacks; the
+	// returned Scan additionally carries roots, errors and relations for
+	// the final Done message.
+	Run(ctx context.Context, cfg config.Config, snapshotID string, progress func(scanner.Progress), batch func([]model.Entry) error) (model.Scan, error)
 }
 
 // ScannerEngine adapts the in-process scanner to the Engine interface. It
 // is the only production implementation.
 type ScannerEngine struct{}
 
-func (ScannerEngine) Run(ctx context.Context, cfg config.Config, progress func(scanner.Progress), batch func([]model.Entry) error) (model.Scan, error) {
+func (ScannerEngine) Run(ctx context.Context, cfg config.Config, snapshotID string, progress func(scanner.Progress), batch func([]model.Entry) error) (model.Scan, error) {
 	engine, err := scanner.New(cfg)
 	if err != nil {
 		return model.Scan{}, err
 	}
+	engine.SetSnapshotID(snapshotID)
 	engine.SetProgressCallback(progress)
 	engine.SetBatchCallback(batch)
 	return engine.Scan(ctx)
@@ -151,7 +153,7 @@ func Serve(conn ipcpipe.Conn, engine Engine, scannerVersion string, heartbeatEve
 		}
 	}()
 
-	result, runErr := engine.Run(ctx, cfg,
+	result, runErr := engine.Run(ctx, cfg, request.Scan.SnapshotID,
 		func(progress scanner.Progress) {
 			if err := stream.Send(scanproto.Message{Type: scanproto.TypeProgress, Progress: &progress}); err != nil {
 				cancel()

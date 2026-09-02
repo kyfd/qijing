@@ -26,5 +26,9 @@
 | 主进程退出时扫描进程退出 | `internal/scanbroker`：Job Object kill-on-close + 显式 terminate | Job Object 由 Windows 语义保证；进程清理路径由 `TestBrokerSurvivesAbruptScannerDeath` 覆盖 | 有测试（部分依赖 OS 语义） |
 | 主进程重验扫描结果的授权边界 | `internal/scanbroker.validateEntry`：RootID + 绝对路径 + `pathsafe.Contained`；预算上限 | `TestBrokerRejectsPathOutsideAuthorizedRoots`；`TestBrokerRejectsUnknownRootID`；`TestBrokerRejectsRelativePath`；`TestBrokerEnforcesEntryBudgetAgainstRogueScanner` | 有测试 |
 | 心跳超时与取消 | `internal/scanbroker` watchdog + `internal/scannerproc` 取消处理 | `TestBrokerHeartbeatTimeoutTerminatesSilentScanner`；`TestBrokerCancelStopsScanAndReportsCancelledStatus`；`TestServeForwardsCancelAndReportsCancelledDone` | 有测试 |
+| 扫描结果流式分批落库，staging 快照不可见 | `internal/store` staging 状态机 + `internal/scanbroker` Sink 生命周期 | `TestStagingLifecycleStreamsAndFinalizes`；`TestBrokerStreamsIntoSinkLifecycle`；`TestStagingLifecycleAbandonHidesEntries` | 有测试 |
+| 重启清理残留 staging 快照，上一完整快照保留 | `application.New` 调用 `store.PurgeStagingScans` | `TestPurgeStagingScansCleansStartupLeftovers`；`TestStartupPurgesLeftoverStagingSnapshots` | 有测试 |
+| schema 迁移 N-1 升级保留旧数据 | `store.applyMigrations` 版本链 | `TestMigrationFromPreviousSchemaPreservesScans` | 有测试 |
+| 低磁盘空间停止扫描 | `application.scanSink`：512 MiB 下限，fail closed | `TestBrokerAbandonsSnapshotWhenSinkFails`（low_disk 代码路径） | 有测试 |
 
 还没有单独自动化、但代码路径存在的项：云端占位文件跳过、junction 环、超长路径、磁盘拔出、SQLite 被占用。这些会放进 Windows CI，而不是继续只写在文档里。

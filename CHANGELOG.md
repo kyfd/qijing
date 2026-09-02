@@ -13,6 +13,15 @@
   并由 `go list -deps` 守护测试钉住。缺少扫描器可执行文件时显式报错，
   不静默回退进程内扫描。
   （[ADR 0002](docs/adr/0002-scanner-subprocess-ipc.md)）
+- **扫描结果流式分批落库（staging 快照）**：主进程不再"全量驻留内存后
+  单事务写库"。Broker 把校验过的 entry 批次按小事务写入
+  `%LocalAppData%\Qijing\data\ecosystem.db`，快照经历
+  `staging → complete/partial/cancelled` 状态机；崩溃、取消、磁盘不足
+  都会把 staging 快照降级为 `incomplete` 并清空其数据，永不作为结果
+  展示，上一完整快照始终保留。启动时自动清理残留 staging 快照；
+  数据卷可用空间低于 512 MiB 时主动停止扫描（fail closed）。
+  新增 `scan_jobs` 表与索引（migration 7），N-1 升级有测试。
+  （[ADR 0004](docs/adr/0004-streaming-scan-storage.md)）
 - **整理动作改用 Windows 稳定文件身份防替换**：预览捕获
   (卷序列号, 文件引用号, 大小, 创建/修改时间)（`internal/fileid`）并纳入
   选择指纹；执行前重新打开文件比对完整身份，被替换成同大小同时间戳的

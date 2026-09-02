@@ -24,6 +24,12 @@ type progressEngine interface {
 	SetProgressCallback(func(scanner.Progress))
 }
 
+// ownResultPersister marks engines that stream into their own staging
+// snapshot; the manager must not persist their result again.
+type ownResultPersister interface {
+	PersistsOwnResults() bool
+}
+
 type scannerFactory = ScanEngineFactory
 
 // ScanManager owns scan task lifetime independently of callers and windows.
@@ -94,9 +100,13 @@ func (m *ScanManager) run(ctx context.Context, taskID string, engine ScanEngine)
 	result, err := engine.Scan(ctx)
 	cancelled := errors.Is(err, context.Canceled) || errors.Is(err, scanner.ErrCancelled) || result.Status == model.ScanStatusCancelled
 	if err == nil && !cancelled {
-		m.updateProgress(taskID, scanner.Progress{Phase: scanner.PhaseSaving})
-		err = m.store.SaveScan(ctx, result)
-		cancelled = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil
+		// Engines that stream into their own staging snapshot have already
+		// persisted everything; saving again would duplicate the snapshot.
+		if _, owns := engine.(ownResultPersister); !owns {
+			m.updateProgress(taskID, scanner.Progress{Phase: scanner.PhaseSaving})
+			err = m.store.SaveScan(ctx, result)
+			cancelled = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil
+		}
 	}
 	m.mu.Lock()
 	if taskID != m.taskID {
