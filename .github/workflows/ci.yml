@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Test and build on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Unit tests
+        run: go test ./...
+
+      - name: Production-tag tests
+        run: go test -tags production ./...
+
+      - name: Path-safety tests
+        run: go test ./internal/pathsafe ./internal/privacy ./internal/scanner ./internal/platform -count=1 -v
+
+      - name: Build desktop zip
+        run: |
+          New-Item -ItemType Directory -Force -Path build\windows | Out-Null
+          go build -tags production -trimpath `
+            -ldflags="-H windowsgui -s -w" `
+            -o build\windows\qijing.exe `
+            .\cmd\ecosystem-desktop
+          Compress-Archive -Path build\windows\qijing.exe,README.md,docs\privacy.md `
+            -DestinationPath build\windows\qijing-windows-amd64.zip -Force
+          Get-FileHash -Algorithm SHA256 build\windows\qijing-windows-amd64.zip |
+            ForEach-Object { "{0}  qijing-windows-amd64.zip" -f $_.Hash.ToLower() } |
+            Set-Content -Encoding ascii build\windows\SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qijing-windows-amd64
+          path: |
+            build/windows/qijing-windows-amd64.zip
+            build/windows/SHA256SUMS

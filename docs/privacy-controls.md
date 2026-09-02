@@ -9,7 +9,7 @@
 | Agent 必须先确认，且确认令牌一次性 | `internal/application` agent 服务 | `TestAgentRequiresNetworkAndExactOneTimeConfirmation` | 有测试 |
 | API Key 不进 SQLite | Windows DPAPI；设置里的 key 不写库 | `TestAPIKeyIsNotPersistedInSQLite`；`TestOriginRejectedAndModelKeyNeverReturned` | 有测试 |
 | 扫描只在显式白名单根内 | `internal/scanner` 拒绝空授权 | `TestScanRequiresExplicitAllowlist`；`TestAuthorizeRootsIsAtomicAndReportsInvalidPaths` | 有测试 |
-| 不得越过白名单根 | `internal/pathsafe.Contained` / `ValidateRoot` | `TestContainedRejectsEscape`；`TestValidateRootRejectsSymlink`；`TestRecyclePathValidationRejectsUnsafeTargets`；`TestRecyclePathValidationRejectsSymlinkedComponents` | 有测试 |
+| 不得越过白名单根 | `internal/pathsafe.Contained` / `ValidateRoot` | `TestContainedRejectsEscape`；`TestValidateRootRejectsSymlink`；`TestJunctionEscapeRejected`；`TestRecyclePathValidationRejectsUnsafeTargets`；`TestRecyclePathValidationRejectsSymlinkedComponents` | 有测试 |
 | 默认不读取文件正文 | 扫描默认 metadata-only；整盘哈希必须显式 opt-in | `TestWholeDriveHashRequiresExplicitOptIn`；`TestScanInvariantsRelationsAndExclusions` | 有测试 |
 | 默认不联网 | Agent 入口要求打开联网并确认 | `TestAgentRequiresNetworkAndExactOneTimeConfirmation` | 有测试 |
 | 清理只进入回收站，不永久删除 | 主进程回收；扫描器进程无写能力 | `TestPrivacyReportsRecycleCapabilityHonestly`；`TestRecycleCandidatesOnlyOffersDisposableClasses`；`TestRecycleConfirmationIsSingleUseAndBound` | 有测试 |

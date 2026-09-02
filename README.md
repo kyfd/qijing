@@ -8,7 +8,9 @@ Windows 上的文件观察工具。给你授权过的目录画一张生态地图
 
 需要 Windows 10/11 和 [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/)。
 
-当前还没有代码签名证书，也还没有 GitHub Release 安装包。Windows 可能会弹出 SmartScreen，这是未签名程序的正常提示，不是产品已经“发布完成”。请从下面的源码构建，或等 [Releases](https://github.com/kyfd/qijing/releases) 出现 `qijing-windows-amd64.zip` 后再下载。
+从 [Releases](https://github.com/kyfd/qijing/releases) 下载 `qijing-windows-amd64.zip`，核对 `SHA256SUMS`，然后运行解压出的 `qijing.exe`。
+
+当前 **没有代码签名证书**。Windows SmartScreen 可能会提示“未识别的应用”，这是未签名程序的正常行为，不是已经上架的安装包。没有证书之前不会提供安装程序。
 
 构建出来的桌面程序：
 
