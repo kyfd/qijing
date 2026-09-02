@@ -13,7 +13,8 @@
 | 默认不读取文件正文 | 扫描默认 metadata-only；整盘哈希必须显式 opt-in | `TestWholeDriveHashRequiresExplicitOptIn`；`TestScanInvariantsRelationsAndExclusions` | 有测试 |
 | 默认不联网 | Agent 入口要求打开联网并确认 | `TestAgentRequiresNetworkAndExactOneTimeConfirmation` | 有测试 |
 | 清理只进入回收站，不永久删除 | 主进程回收；扫描器进程无写能力 | `TestPrivacyReportsRecycleCapabilityHonestly`；`TestRecycleCandidatesOnlyOffersDisposableClasses`；`TestRecycleConfirmationIsSingleUseAndBound` | 有测试 |
-| 回收确认绑定预览快照，文件变了就拒绝 | 预览指纹含大小与修改时间 | `TestRecycleRefusesFilesChangedSincePreview`；`TestRecycleConfirmationExpiresAndIsSnapshotBound` | 有测试 |
+| 回收确认绑定预览快照，文件变了就拒绝 | 预览指纹含完整 Windows 文件身份 | `TestRecycleRefusesFilesChangedSincePreview`；`TestRecycleConfirmationExpiresAndIsSnapshotBound` | 有测试 |
+| 执行前重验文件对象身份，同 stat 的替换文件也拒绝 | `internal/fileid` + `internal/application.recycleOne` | `TestIdentifyChangesWhenFileIsReplaced`；`TestRecycleRefusesFileReplacedWithIdenticalStatData` | 有测试 |
 | 扫描取消必须停在安全的部分结果 | 扫描预算 / cancel 返回 partial | `TestScanCancellationReturnsSafePartialResult`；`TestCancelledPartialRestoresOnRestart` | 有测试 |
 | 服务只听 loopback | HTTP 预览拒绝非本机地址 | `TestServerRejectsNonLoopbackAddress` | 有测试 |
 | 索引不进入可能漫游的配置目录；迁移不丢数据 | `internal/appdir`：LocalAppData 布局、完整性检查、备份、staging、原子切换、标记 | `TestNormalMigrationMovesDataAndKeepsLegacy`；`TestBackupFailureLeavesNoPartialState`；`TestStagingFailureRemovesStaging` | 有测试 |

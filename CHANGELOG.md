@@ -13,6 +13,12 @@
   并由 `go list -deps` 守护测试钉住。缺少扫描器可执行文件时显式报错，
   不静默回退进程内扫描。
   （[ADR 0002](docs/adr/0002-scanner-subprocess-ipc.md)）
+- **整理动作改用 Windows 稳定文件身份防替换**：预览捕获
+  (卷序列号, 文件引用号, 大小, 创建/修改时间)（`internal/fileid`）并纳入
+  选择指纹；执行前重新打开文件比对完整身份，被替换成同大小同时间戳的
+  同名文件也会被拒绝（`ErrRecycleChanged`）。拿不到稳定身份的文件系统
+  上一律 fail-closed。识别过程零写入、零网络。
+  （[ADR 0003](docs/adr/0003-windows-file-identity.md)）
 - **命令行入口对齐目标结构**：`cmd/qijing`（正式桌面应用）、
   `cmd/qijing-scanner`（独立扫描进程）、`cmd/qijing-preview`（仅开发调试，
   桌面版不引用）。正式桌面构建仍然不监听任何 TCP 端口。

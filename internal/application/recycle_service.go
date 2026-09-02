@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kyfd/qijing/internal/fileid"
 	"github.com/kyfd/qijing/internal/model"
 	"github.com/kyfd/qijing/internal/pathsafe"
 	"github.com/kyfd/qijing/internal/platform"
@@ -96,9 +97,11 @@ type RecycleHistoryDTO struct {
 	Items []store.RecycledItem `json:"items"`
 }
 
-// recycleTarget is the resolved, validated file behind one candidate. Size and
-// modification time are captured at preview time so confirmation can prove the
-// file is still the one the user looked at.
+// recycleTarget is the resolved, validated file behind one candidate. The
+// full Windows identity (volume serial, file reference number, size,
+// timestamps) is captured at preview time so confirmation can prove the
+// file is still the same object the user looked at — not merely another
+// file that happens to share the path and stat data.
 type recycleTarget struct {
 	entryID  string
 	name     string
@@ -107,6 +110,7 @@ type recycleTarget struct {
 	kind     string
 	size     int64
 	modTime  time.Time
+	identity fileid.Identity
 	zone     string
 	reason   string
 	modified string
@@ -206,11 +210,15 @@ func (s *Service) PreviewRecycle(ctx context.Context, request RecyclePreviewRequ
 		if err != nil {
 			return RecyclePreviewDTO{}, err
 		}
+		identity, err := fileid.Identify(entry.Path)
+		if err != nil {
+			return RecyclePreviewDTO{}, fmt.Errorf("capture file identity: %w", err)
+		}
 		zone, _, reason := zoneFor(entry)
 		modified := info.ModTime().Format("2006-01-02")
 		targets = append(targets, recycleTarget{
 			entryID: entry.ID, name: entry.Name, path: entry.Path, root: root, kind: string(entry.Kind),
-			size: info.Size(), modTime: info.ModTime(), zone: zone, reason: reason, modified: modified,
+			size: info.Size(), modTime: info.ModTime(), identity: identity, zone: zone, reason: reason, modified: modified,
 		})
 		items = append(items, RecycleCandidateDTO{
 			EntryID: entry.ID, Name: entry.Name, Path: entry.Path, Size: info.Size(),
@@ -286,17 +294,20 @@ func (s *Service) RecycleHistory(ctx context.Context, limit int) (RecycleHistory
 	return RecycleHistoryDTO{Items: items}, nil
 }
 
-// recycleOne re-validates immediately before acting. The preview proved intent;
-// this proves the file on disk is still the one that intent referred to.
+// recycleOne re-validates immediately before acting. The preview proved
+// intent; this proves the file on disk is still the very object that intent
+// referred to: same volume serial and file reference number, same size,
+// same timestamps. A path that now resolves to a different file object —
+// even one with byte-for-byte identical stat data — is refused.
 func (s *Service) recycleOne(target recycleTarget) error {
 	if _, err := s.validateRecyclePath(target.path); err != nil {
 		return err
 	}
-	info, err := os.Lstat(target.path)
+	identity, err := fileid.Identify(target.path)
 	if err != nil {
 		return err
 	}
-	if info.Size() != target.size || !info.ModTime().Equal(target.modTime) {
+	if !identity.Matches(target.identity) {
 		return ErrRecycleChanged
 	}
 	return platform.MoveToRecycleBin(target.path)
@@ -368,8 +379,8 @@ func recycleBlockerMessage(err error) string {
 	}
 }
 
-// selectionHash binds a confirmation to the snapshot and to each file's exact
-// identity at preview time.
+// selectionHash binds a confirmation to the snapshot and to each file's
+// full Windows identity at preview time.
 func selectionHash(snapshotID string, targets []recycleTarget) string {
 	ordered := append([]recycleTarget(nil), targets...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].path < ordered[j].path })
@@ -377,6 +388,8 @@ func selectionHash(snapshotID string, targets []recycleTarget) string {
 	fmt.Fprintf(sum, "%s\x00", snapshotID)
 	for _, target := range ordered {
 		fmt.Fprintf(sum, "%s\x00%d\x00%s\x00", target.path, target.size, target.modTime.UTC().Format(time.RFC3339Nano))
+		fmt.Fprintf(sum, "%d\x00%d\x00%s\x00", target.identity.VolumeSerial, target.identity.FileID,
+			target.identity.CreationTime.UTC().Format(time.RFC3339Nano))
 	}
 	return hex.EncodeToString(sum.Sum(nil))
 }

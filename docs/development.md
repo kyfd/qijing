@@ -51,7 +51,7 @@ go mod download
 
 不要添加永久删除、移动、重命名、覆盖、解压、Git 写操作或 shell 命令执行器。Explorer 定位仅负责显示目标。
 
-扩展回收功能时必须保留全部既有约束：候选仅限 rotten / orphan 分类；单批上限 50；preview → confirm 两阶段，令牌一次性、限时、常量时间比较；选择指纹绑定文件大小与修改时间；预览与执行两次执行完整路径校验；始终带 `FOF_ALLOWUNDO` 并保留 `FOF_WANTNUKEWARNING`；每项操作写审计。不要为了「更方便」而绕过其中任何一条。
+扩展回收功能时必须保留全部既有约束：候选仅限 rotten / orphan 分类；单批上限 50；preview → confirm 两阶段，令牌一次性、限时、常量时间比较；选择指纹与执行前重验绑定完整 Windows 文件身份（卷序列号 + 文件引用号 + 大小 + 时间戳，`internal/fileid`）；预览与执行两次执行完整路径校验；始终带 `FOF_ALLOWUNDO` 并保留 `FOF_WANTNUKEWARNING`；每项操作写审计。不要为了「更方便」而绕过其中任何一条。
 
 ## 开发循环
 

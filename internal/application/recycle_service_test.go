@@ -255,6 +255,48 @@ func TestRecycleRefusesFilesChangedSincePreview(t *testing.T) {
 	}
 }
 
+// The strongest TOCTOU scenario: the file at the confirmed path is replaced
+// by a different file object whose size and modification time are identical
+// to the previewed ones. Stat-data checks alone would approve this; the
+// Windows file identity must not.
+func TestRecycleRefusesFileReplacedWithIdenticalStatData(t *testing.T) {
+	service := newRecycleService(t)
+	root := t.TempDir()
+	target := writeFile(t, root, "cache.tmp", "junk")
+	scan := seedRecycleScan(t, service, root, target)
+
+	preview, err := service.PreviewRecycle(context.Background(), RecyclePreviewRequestDTO{EntryIDs: []string{scan.Entries[0].ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.recycle.mu.Lock()
+	targets := service.recycle.confirmations[preview.ConfirmationToken].targets
+	service.recycle.mu.Unlock()
+
+	original, err := os.Lstat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Replace the file: same name, same size, and the modification time is
+	// forced back to the observed value.
+	if err = os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(target, []byte("junk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chtimes(target, original.ModTime(), original.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = service.recycleOne(targets[0]); !errors.Is(err, ErrRecycleChanged) {
+		t.Fatalf("a replaced file must be refused, got %v", err)
+	}
+	if _, err = os.Lstat(target); err != nil {
+		t.Fatalf("the replaced file must remain: %v", err)
+	}
+}
+
 func TestRecycleHistoryStartsEmptyAndSurvivesSnapshotLoss(t *testing.T) {
 	service := newRecycleService(t)
 	ctx := context.Background()
