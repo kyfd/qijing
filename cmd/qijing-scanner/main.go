@@ -12,13 +12,13 @@ import (
 	"github.com/kyfd/qijing/internal/scanner"
 )
 
-// ecosystem-scanner is a deliberately narrow helper. Its only filesystem
+// qijing-scanner is a deliberately narrow helper. Its only filesystem
 // capability is read-only scanning; its JSON output never includes paths.
 func main() {
 	hash := flag.Bool("hash", false, "calculate local hashes")
 	flag.Parse()
 	if flag.NArg() == 0 {
-		fmt.Fprintln(os.Stderr, "usage: ecosystem-scanner [-hash] ROOT...")
+		fmt.Fprintln(os.Stderr, "usage: qijing-scanner [-hash] ROOT...")
 		os.Exit(2)
 	}
 	cfg := config.Default()

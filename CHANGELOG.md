@@ -4,6 +4,9 @@
 
 ### Trust Hardening（v0.1.x）
 
+- **命令行入口对齐目标结构**：`cmd/qijing`（正式桌面应用）、
+  `cmd/qijing-scanner`（独立扫描进程）、`cmd/qijing-preview`（仅开发调试，
+  桌面版不引用）。正式桌面构建仍然不监听任何 TCP 端口。
 - **本地数据迁移到 `%LocalAppData%\Qijing`**：扫描索引、历史与审计不再存放
   于可能随漫游配置文件复制的 `%AppData%`。数据目录 DACL 明确限制到当前
   用户、SYSTEM 与 Administrators（受保护 DACL）。旧目录迁移按“完整性检查

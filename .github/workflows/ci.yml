@@ -35,7 +35,7 @@ jobs:
           go build -tags production -trimpath `
             -ldflags="-H windowsgui -s -w" `
             -o build\windows\qijing.exe `
-            .\cmd\ecosystem-desktop
+            .\cmd\qijing
           Compress-Archive -Path build\windows\qijing.exe,README.md,docs\privacy.md `
             -DestinationPath build\windows\qijing-windows-amd64.zip -Force
           Get-FileHash -Algorithm SHA256 build\windows\qijing-windows-amd64.zip |

@@ -134,9 +134,9 @@ Remove-Item Env:GOARCH -ErrorAction SilentlyContinue
 当前入口包括：
 
 ```text
-cmd/ecosystem-desktop/  Wails WebView2 + Windows 通知区域桌面应用
-cmd/ecosystem/          显式 HTTP 开发预览与 CLI
-cmd/ecosystem-scanner/  独立匿名只读扫描器
+cmd/qijing/            Wails WebView2 + Windows 通知区域桌面应用（正式桌面构建）
+cmd/qijing-preview/    仅开发调试的显式 HTTP 预览与 CLI，桌面版不引用
+cmd/qijing-scanner/    独立匿名只读扫描进程
 ```
 
 桌面生产构建必须包含 Wails 的 `production` tag，并使用 Windows GUI subsystem。若修改了 `internal\appicon\appicon.ico`，先重新生成资源对象；否则直接使用仓库内已生成的 amd64 资源：
@@ -146,8 +146,8 @@ New-Item -ItemType Directory -Force .\build\windows | Out-Null
 go run .\cmd\icon-resource # 仅在替换图标后运行
 go build -tags production -trimpath `
   -ldflags="-H windowsgui -s -w" `
-  -o .\build\windows\ecosystem-desktop.exe `
-  .\cmd\ecosystem-desktop
+  -o .\build\windows\qijing.exe `
+  .\cmd\qijing
 ```
 
 图标母版为 `assets\appicon.png`，多尺寸 ICO 由 `internal\appicon` 嵌入托盘，并作为 Windows resource ID 3 编入 EXE，使窗口、任务栏和通知区域使用同一品牌标识。

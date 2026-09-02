@@ -1,5 +1,5 @@
 // Command icon-resource generates the Windows resource object consumed by the
-// ecosystem-desktop package. Run it from the repository root after replacing
+// qijing package. Run it from the repository root after replacing
 // internal/appicon/appicon.ico.
 package main
 
@@ -26,7 +26,7 @@ func main() {
 		fatal(fmt.Errorf("set icon resource: %w", err))
 	}
 
-	output, err := os.Create("cmd/ecosystem-desktop/appicon_windows_amd64.syso")
+	output, err := os.Create("cmd/qijing/appicon_windows_amd64.syso")
 	if err != nil {
 		fatal(err)
 	}

@@ -15,7 +15,7 @@ Windows 上的文件观察工具。给你授权过的目录画一张生态地图
 构建出来的桌面程序：
 
 ```powershell
-.\build\windows\ecosystem-desktop.exe
+.\build\windows\qijing.exe
 ```
 
 - 启动后只待在托盘，主窗口默认不弹
@@ -35,8 +35,8 @@ cd qijing
 go test -tags production ./...
 go build -tags production -trimpath `
   -ldflags="-H windowsgui -s -w" `
-  -o build\windows\ecosystem-desktop.exe `
-  .\cmd\ecosystem-desktop
+  -o build\windows\qijing.exe `
+  .\cmd\qijing
 ```
 
 `go.mod` 声明的是 **Go 1.26.3**，因为这是当前核实过的构建工具链，不是因为代码依赖某个 1.26 补丁特性。更低版本尚未做兼容认证。换图标时先改 `assets/appicon.png` 和 `internal/appicon/appicon.ico`，再跑 `go run .\cmd\icon-resource`。
@@ -46,7 +46,7 @@ Go module 路径是 `github.com/kyfd/qijing`。
 独立扫描器（只往 stdout 打匿名结果）：
 
 ```powershell
-go build -o dist\ecosystem-scanner.exe .\cmd\ecosystem-scanner
+go build -o dist\qijing-scanner.exe .\cmd\qijing-scanner
 ```
 
 ## 模型（可选）
@@ -57,13 +57,13 @@ go build -o dist\ecosystem-scanner.exe .\cmd\ecosystem-scanner
 
 ## 开发预览
 
-`cmd/ecosystem` 是带本地端口的预览，桌面版不用它：
+`cmd/qijing-preview` 是带本地端口的预览，桌面版不用它：
 
 ```text
-ecosystem serve      127.0.0.1:8765
-ecosystem status
-ecosystem open
-ecosystem privacy
+qijing-preview serve      127.0.0.1:8765
+qijing-preview status
+qijing-preview open
+qijing-preview privacy
 ```
 
 ## 整理与回收
