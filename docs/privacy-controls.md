@@ -16,5 +16,8 @@
 | 回收确认绑定预览快照，文件变了就拒绝 | 预览指纹含大小与修改时间 | `TestRecycleRefusesFilesChangedSincePreview`；`TestRecycleConfirmationExpiresAndIsSnapshotBound` | 有测试 |
 | 扫描取消必须停在安全的部分结果 | 扫描预算 / cancel 返回 partial | `TestScanCancellationReturnsSafePartialResult`；`TestCancelledPartialRestoresOnRestart` | 有测试 |
 | 服务只听 loopback | HTTP 预览拒绝非本机地址 | `TestServerRejectsNonLoopbackAddress` | 有测试 |
+| 索引不进入可能漫游的配置目录；迁移不丢数据 | `internal/appdir`：LocalAppData 布局、完整性检查、备份、staging、原子切换、标记 | `TestNormalMigrationMovesDataAndKeepsLegacy`；`TestBackupFailureLeavesNoPartialState`；`TestStagingFailureRemovesStaging` | 有测试 |
+| 数据目录 DACL 限制到当前用户 | `internal/appdir`：受保护 DACL（用户/SYSTEM/Administrators） | `TestRestrictToCurrentUserMakesDirPrivate`；`TestVerifyUserPrivateRejectsEveryoneGrant`；`TestChildInheritsRestriction` | 有测试 |
+| API Key 密文不放在漫游目录 | DPAPI 密文写入 `%LocalAppData%\Qijing\data\secrets` | 密文迁移为纯复制，测试见 `TestSecretsMigrationCopiesOnlyBlobs` | 有测试 |
 
 还没有单独自动化、但代码路径存在的项：云端占位文件跳过、junction 环、超长路径、磁盘拔出、SQLite 被占用。这些会放进 Windows CI，而不是继续只写在文档里。

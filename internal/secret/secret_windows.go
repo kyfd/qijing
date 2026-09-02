@@ -18,15 +18,8 @@ type dpapiStore struct {
 	dir string
 }
 
-func New(namespace string) Store {
-	base, err := os.UserConfigDir()
-	if err != nil {
-		return &dpapiStore{dir: ""}
-	}
-	if namespace == "" {
-		namespace = "github.com/kyfd/qijing"
-	}
-	return &dpapiStore{dir: filepath.Join(base, namespace, "secrets")}
+func New(dir string) Store {
+	return &dpapiStore{dir: dir}
 }
 
 func (s *dpapiStore) Save(name string, value []byte) error {

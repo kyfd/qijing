@@ -170,9 +170,9 @@ type AgentManager struct {
 	cancels       map[string]context.CancelFunc
 }
 
-func newAgentManager(db *store.Store, client ModelClient, secrets SecretStore, snapshot func() model.Scan) *AgentManager {
+func newAgentManager(db *store.Store, client ModelClient, secrets SecretStore, secretsDir string, snapshot func() model.Scan) *AgentManager {
 	if secrets == nil {
-		secrets = osSecrets{store: secret.New("github.com/kyfd/qijing")}
+		secrets = osSecrets{store: secret.New(secretsDir)}
 	}
 	if client == nil {
 		client = llmModelClient{}

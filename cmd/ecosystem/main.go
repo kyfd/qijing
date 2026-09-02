@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/kyfd/qijing/internal/appdir"
 	"github.com/kyfd/qijing/internal/platform"
 	"github.com/kyfd/qijing/internal/server"
 )
@@ -28,14 +28,14 @@ func run(args []string) error {
 	if len(args) > 0 {
 		command = args[0]
 	}
-	dataDir, err := appDataDir()
+	layout, err := appdir.Ensure()
 	if err != nil {
 		return err
 	}
 	baseURL := "http://127.0.0.1:8765"
 	switch command {
 	case "serve":
-		srv, err := server.New(server.Options{DataDir: dataDir, Addr: "127.0.0.1:8765"})
+		srv, err := server.New(server.Options{DataDir: layout.Data, Addr: "127.0.0.1:8765"})
 		if err != nil {
 			return err
 		}
@@ -65,14 +65,6 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("未知命令 %q；可用命令：serve、open、status、privacy", command)
 	}
-}
-
-func appDataDir() (string, error) {
-	base, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(base, "FileEcosystem"), nil
 }
 
 func printGET(url string) error {

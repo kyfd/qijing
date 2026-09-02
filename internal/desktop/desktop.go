@@ -3,10 +3,9 @@ package desktop
 import (
 	"context"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sync"
 
+	"github.com/kyfd/qijing/internal/appdir"
 	"github.com/kyfd/qijing/internal/instance"
 	"github.com/kyfd/qijing/internal/server"
 	"github.com/kyfd/qijing/internal/tray"
@@ -35,11 +34,13 @@ func Run() error {
 	}
 	defer lock.Close()
 
-	dataDir, err := appDataDir()
+	// The index holds real paths and file names, so it lives under
+	// %LocalAppData% and never in the roaming profile (ADR 0001).
+	layout, err := appdir.Ensure()
 	if err != nil {
 		return err
 	}
-	backend, err := server.New(server.Options{DataDir: dataDir, Addr: "127.0.0.1:8765"})
+	backend, err := server.New(server.Options{DataDir: layout.Data, Addr: "127.0.0.1:8765"})
 	if err != nil {
 		return err
 	}
@@ -104,14 +105,6 @@ func (s *shell) shutdown(context.Context) {
 	if s.tray != nil {
 		s.tray.Close()
 	}
-}
-
-func appDataDir() (string, error) {
-	base, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(base, "FileEcosystem"), nil
 }
 
 // desktopHandler adapts the existing HTTP application API to Wails' in-process

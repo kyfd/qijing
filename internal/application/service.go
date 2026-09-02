@@ -62,7 +62,7 @@ func New(options Options) (*Service, error) {
 	}
 	factory := func(cfg config.Config) (scanEngine, error) { return scanner.New(cfg) }
 	svc := &Service{db: db, cfg: cfg, manager: newScanManager(options.Context, db, latest, factory), recycle: newRecycleManager()}
-	svc.agent = newAgentManager(db, options.Model, options.Secrets, svc.agentSnapshot)
+	svc.agent = newAgentManager(db, options.Model, options.Secrets, filepath.Join(options.DataDir, "secrets"), svc.agentSnapshot)
 	return svc, nil
 }
 
