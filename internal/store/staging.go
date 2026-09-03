@@ -65,6 +65,9 @@ func (s *Store) WriteEntryBatch(ctx context.Context, scanID string, entries []mo
 			scanID, entry.ID, entry.RootID, entry.Path, entry.Relative, entry.Name, entry.Extension, entry.Kind, entry.Size, formatTime(entry.ModTime), entry.SHA256, string(classes), entry.GitProject, entry.Error); err != nil {
 			return fmt.Errorf("write entry batch: %w", err)
 		}
+		if err = insertEntryClasses(ctx, tx, scanID, entry); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -115,6 +118,9 @@ func (s *Store) AbandonScan(ctx context.Context, scanID, reason string) error {
 		return err
 	}
 	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM entry_classes WHERE scan_id=?`, scanID); err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM entries WHERE scan_id=?`, scanID); err != nil {
 		return err
 	}

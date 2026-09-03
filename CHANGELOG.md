@@ -4,6 +4,15 @@
 
 ### Trust Hardening（v0.1.x）
 
+- **按需读取路径**：扫描结束后不再把整份快照的条目留在内存里，
+  `ScanManager` 只保留快照元数据，地图 / 节点详情 / 整理候选 / 统计 /
+  建议全部改为对 SQLite 的有界查询。新增归一化的 `entry_classes` 表
+  （migration 8，含既有快照回填），类别筛选从 JSON 扫描变为索引查找；
+  分页排序以 id 打破大小并列，不重复不漏行。隐私视图与 Agent payload
+  改为逐行流式聚合：payload 仍然只从允许字段构造，不存在"先复制整条
+  记录再裁剪"的中间对象。地图读取失败时渲染为空并保留真实统计，
+  而不是给出会低估快照规模的部分结果。
+  （[ADR 0005](docs/adr/0005-on-demand-read-path.md)）
 - **扫描可暂停 / 继续**：协议新增 `pause`/`resume` 帧，扫描进程在暂停闸门处
   停止产出条目但保持心跳存活；主进程 `ScanManager.Pause()/Resume()` 与
   `POST /api/v1/scan/pause|resume` 打通到界面按钮，暂停状态随扫描进度返回。

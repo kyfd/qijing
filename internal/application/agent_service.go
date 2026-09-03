@@ -161,23 +161,25 @@ type confirmation struct {
 	Expires                                  time.Time
 }
 type AgentManager struct {
-	mu            sync.Mutex
-	db            *store.Store
-	client        ModelClient
-	secrets       SecretStore
-	snapshot      func() model.Scan
+	mu      sync.Mutex
+	db      *store.Store
+	client  ModelClient
+	secrets SecretStore
+	// snapshotMeta reports which snapshot the agent may summarize, without
+	// its entries: those are streamed from the store when a payload is built.
+	snapshotMeta  func() model.Scan
 	confirmations map[string]confirmation
 	cancels       map[string]context.CancelFunc
 }
 
-func newAgentManager(db *store.Store, client ModelClient, secrets SecretStore, secretsDir string, snapshot func() model.Scan) *AgentManager {
+func newAgentManager(db *store.Store, client ModelClient, secrets SecretStore, secretsDir string, snapshotMeta func() model.Scan) *AgentManager {
 	if secrets == nil {
 		secrets = osSecrets{store: secret.New(secretsDir)}
 	}
 	if client == nil {
 		client = llmModelClient{}
 	}
-	return &AgentManager{db: db, client: client, secrets: secrets, snapshot: snapshot, confirmations: map[string]confirmation{}, cancels: map[string]context.CancelFunc{}}
+	return &AgentManager{db: db, client: client, secrets: secrets, snapshotMeta: snapshotMeta, confirmations: map[string]confirmation{}, cancels: map[string]context.CancelFunc{}}
 }
 
 func (s *Service) GetModelProfile(ctx context.Context) (ModelProfileDTO, error) {
@@ -307,8 +309,14 @@ func (m *AgentManager) setNetwork(ctx context.Context, enabled bool) error {
 	}
 	return nil
 }
-func (m *AgentManager) payload() (agent.CloudPayload, []byte, string, error) {
-	p, err := agent.BuildCloudPayload(m.snapshot())
+
+// payload aggregates the snapshot straight out of storage: entries stream past
+// the builder one at a time and only bucketed counts are kept.
+func (m *AgentManager) payload(ctx context.Context) (agent.CloudPayload, []byte, string, error) {
+	scan := m.snapshotMeta()
+	p, err := agent.BuildCloudPayloadStream(scan, func(visit func(model.Entry) error) error {
+		return m.db.EachEntry(ctx, scan.ID, visit)
+	})
 	if err != nil {
 		return agent.CloudPayload{}, nil, "", err
 	}
@@ -335,8 +343,8 @@ func (m *AgentManager) preview(ctx context.Context) (AgentPreviewDTO, error) {
 	if !enabled {
 		return AgentPreviewDTO{}, ErrNetworkDisabled
 	}
-	scanID := m.snapshot().ID
-	payload, body, hash, err := m.payload()
+	scanID := m.snapshotMeta().ID
+	payload, body, hash, err := m.payload(ctx)
 	if err != nil {
 		return AgentPreviewDTO{}, err
 	}
@@ -358,7 +366,7 @@ func (m *AgentManager) start(ctx context.Context, hash, token string) (AgentRunD
 	if !enabled {
 		return AgentRunDTO{}, ErrNetworkDisabled
 	}
-	currentScanID := m.snapshot().ID
+	currentScanID := m.snapshotMeta().ID
 	m.mu.Lock()
 	c, ok := m.confirmations[token]
 	delete(m.confirmations, token)

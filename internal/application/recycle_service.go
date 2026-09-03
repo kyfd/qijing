@@ -37,6 +37,18 @@ const recycleTokenLifetime = 10 * time.Minute
 // reviewed, item-by-item act rather than a bulk sweep.
 const maxRecycleBatch = 50
 
+// The candidate list is read from SQLite in pages so a snapshot of any size
+// costs the same memory. recycleCandidateLimit bounds what the UI shows;
+// recycleCandidatePage bounds one query.
+const (
+	recycleCandidateLimit = 200
+	recycleCandidatePage  = 200
+)
+
+// recyclableClasses is the allowlist behind the candidate query. It must stay
+// in step with recyclable(): the query narrows, and recyclable() decides.
+var recyclableClasses = []model.Class{model.ClassRotten, model.ClassOrphan}
+
 // RecycleCandidateDTO is one file the user may choose to send to the Recycle
 // Bin. It always carries the real path: the user cannot consent to something
 // they cannot see.
@@ -138,30 +150,44 @@ func newRecycleManager() *RecycleManager {
 // whether they can currently be recycled. Ineligible rows are still returned so
 // the reason is visible rather than silently hidden.
 func (s *Service) RecycleCandidates(ctx context.Context) RecycleCandidatesDTO {
-	scan, _, _, _, _, _, _ := s.manager.snapshot()
-	ignored, _ := s.db.IgnoredRecommendations(ctx, scan.ID)
-	out := RecycleCandidatesDTO{SnapshotID: scan.ID, Candidates: []RecycleCandidateDTO{}}
-	for _, entry := range scan.Entries {
-		if ignored[entry.ID] || entry.Kind != model.KindFile || !recyclable(entry) {
-			continue
+	scanID := s.snapshotID()
+	ignored, _ := s.db.IgnoredRecommendations(ctx, scanID)
+	out := RecycleCandidatesDTO{SnapshotID: scanID, Candidates: []RecycleCandidateDTO{}}
+	if scanID == "" {
+		return out
+	}
+	// The store returns the recyclable classes largest first, so paging can stop
+	// as soon as the list is full instead of reading the whole snapshot.
+	for offset := 0; len(out.Candidates) < recycleCandidateLimit; offset += recycleCandidatePage {
+		page, err := s.db.EntriesWithClasses(ctx, scanID, recyclableClasses, model.KindFile, recycleCandidatePage, offset)
+		if err != nil || len(page) == 0 {
+			break
 		}
-		zone, _, reason := zoneFor(entry)
-		candidate := RecycleCandidateDTO{
-			EntryID: entry.ID, Name: entry.Name, Path: entry.Path, Size: entry.Size,
-			Kind: string(entry.Kind), Modified: entry.ModTime.Format("2006-01-02"),
-			Zone: zone, Reason: reason, Eligible: true,
-		}
-		if _, err := s.validateRecyclePath(entry.Path); err != nil {
-			// A file that is already gone (recycled, or removed elsewhere) is
-			// noise rather than information; every other blocker is shown.
-			if errors.Is(err, os.ErrNotExist) {
+		for _, entry := range page {
+			if ignored[entry.ID] || !recyclable(entry) {
 				continue
 			}
-			candidate.Eligible = false
-			candidate.Blocker = recycleBlockerMessage(err)
+			zone, _, reason := zoneFor(entry)
+			candidate := RecycleCandidateDTO{
+				EntryID: entry.ID, Name: entry.Name, Path: entry.Path, Size: entry.Size,
+				Kind: string(entry.Kind), Modified: entry.ModTime.Format("2006-01-02"),
+				Zone: zone, Reason: reason, Eligible: true,
+			}
+			if _, err := s.validateRecyclePath(entry.Path); err != nil {
+				// A file that is already gone (recycled, or removed elsewhere) is
+				// noise rather than information; every other blocker is shown.
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				candidate.Eligible = false
+				candidate.Blocker = recycleBlockerMessage(err)
+			}
+			out.Candidates = append(out.Candidates, candidate)
+			if len(out.Candidates) >= recycleCandidateLimit {
+				break
+			}
 		}
-		out.Candidates = append(out.Candidates, candidate)
-		if len(out.Candidates) >= 200 {
+		if len(page) < recycleCandidatePage {
 			break
 		}
 	}
@@ -172,8 +198,8 @@ func (s *Service) RecycleCandidates(ctx context.Context) RecycleCandidatesDTO {
 // PreviewRecycle validates an explicit selection and issues a one-time
 // confirmation token bound to the snapshot and to the exact files on disk.
 func (s *Service) PreviewRecycle(ctx context.Context, request RecyclePreviewRequestDTO) (RecyclePreviewDTO, error) {
-	scan, _, _, _, _, _, _ := s.manager.snapshot()
-	if scan.ID == "" {
+	scanID := s.snapshotID()
+	if scanID == "" {
 		return RecyclePreviewDTO{}, ErrNoScan
 	}
 	if len(request.EntryIDs) == 0 {
@@ -182,9 +208,9 @@ func (s *Service) PreviewRecycle(ctx context.Context, request RecyclePreviewRequ
 	if len(request.EntryIDs) > maxRecycleBatch {
 		return RecyclePreviewDTO{}, fmt.Errorf("select at most %d items per confirmation", maxRecycleBatch)
 	}
-	entries := map[string]model.Entry{}
-	for _, entry := range scan.Entries {
-		entries[entry.ID] = entry
+	entries, err := s.db.EntriesByID(ctx, scanID, request.EntryIDs)
+	if err != nil {
+		return RecyclePreviewDTO{}, fmt.Errorf("read snapshot entries: %w", err)
 	}
 	seen := map[string]bool{}
 	targets := make([]recycleTarget, 0, len(request.EntryIDs))
@@ -226,13 +252,13 @@ func (s *Service) PreviewRecycle(ctx context.Context, request RecyclePreviewRequ
 		})
 		total += info.Size()
 	}
-	hash := selectionHash(scan.ID, targets)
+	hash := selectionHash(scanID, targets)
 	token := randomID(32)
 	s.recycle.mu.Lock()
-	s.recycle.confirmations[token] = recycleConfirmation{hash: hash, snapshotID: scan.ID, targets: targets, expires: time.Now().Add(recycleTokenLifetime)}
+	s.recycle.confirmations[token] = recycleConfirmation{hash: hash, snapshotID: scanID, targets: targets, expires: time.Now().Add(recycleTokenLifetime)}
 	s.recycle.mu.Unlock()
 	return RecyclePreviewDTO{
-		SnapshotID: scan.ID, Items: items, TotalBytes: total, SelectionHash: hash,
+		SnapshotID: scanID, Items: items, TotalBytes: total, SelectionHash: hash,
 		ConfirmationToken: token, ExpiresInSeconds: int(recycleTokenLifetime.Seconds()),
 	}, nil
 }

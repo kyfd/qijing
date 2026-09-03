@@ -123,6 +123,10 @@ func (m *ScanManager) run(ctx context.Context, taskID string, engine ScanEngine)
 		return
 	}
 	if err == nil && !cancelled {
+		// Entries live in SQLite, not here: the manager retains only the
+		// snapshot's metadata so a scan of any size costs the same memory.
+		result.Entries = nil
+		result.Relations = nil
 		m.latest = result
 		m.lastErr = ""
 	} else if !cancelled {

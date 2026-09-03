@@ -39,14 +39,31 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // LatestScan restores the most recently completed immutable snapshot.
 func (s *Store) LatestScan(ctx context.Context) (model.Scan, error) {
-	var id string
-	// Staging and incomplete snapshots are never scan results: the most
-	// recent complete snapshot stays visible while a new scan streams.
-	if err := s.db.QueryRowContext(ctx, `SELECT id FROM scans WHERE status NOT IN (?,?,?) ORDER BY ended_at DESC, rowid DESC LIMIT 1`,
-		SnapshotStatusStaging, SnapshotStatusIncomplete, model.ScanStatusCancelled).Scan(&id); err != nil {
+	id, err := s.latestScanID(ctx)
+	if err != nil {
 		return model.Scan{}, err
 	}
 	return s.Scan(ctx, id)
+}
+
+// LatestScanMeta restores the most recent complete snapshot without its
+// entries or relations. The application holds this: entries are read on
+// demand, so a snapshot of any size costs the same memory here.
+func (s *Store) LatestScanMeta(ctx context.Context) (model.Scan, error) {
+	id, err := s.latestScanID(ctx)
+	if err != nil {
+		return model.Scan{}, err
+	}
+	return s.ScanMeta(ctx, id)
+}
+
+// Staging and incomplete snapshots are never scan results: the most recent
+// complete snapshot stays visible while a new scan streams.
+func (s *Store) latestScanID(ctx context.Context) (string, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM scans WHERE status NOT IN (?,?,?) ORDER BY ended_at DESC, rowid DESC LIMIT 1`,
+		SnapshotStatusStaging, SnapshotStatusIncomplete, model.ScanStatusCancelled).Scan(&id)
+	return id, err
 }
 
 // AuthorizedRoots returns the persisted filesystem allowlist.
@@ -143,6 +160,20 @@ CREATE TABLE IF NOT EXISTS suggestions(id INTEGER PRIMARY KEY AUTOINCREMENT, sca
 		);
 		CREATE INDEX IF NOT EXISTS scans_status ON scans(status);
 		CREATE INDEX IF NOT EXISTS entries_scan_id ON entries(scan_id);`,
+	// On-demand read path: the application no longer keeps every entry in
+	// memory, so the queries behind the map, the node inspector and the
+	// tidy-up candidates must be index-backed rather than full scans.
+	// entry_classes normalizes the JSON class array so class predicates are
+	// an index seek; the backfill keeps existing snapshots queryable.
+	`CREATE TABLE IF NOT EXISTS entry_classes(
+		 scan_id TEXT NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+		 entry_id TEXT NOT NULL, class TEXT NOT NULL,
+		 PRIMARY KEY(scan_id,entry_id,class)
+		);
+		CREATE INDEX IF NOT EXISTS entry_classes_scan_class ON entry_classes(scan_id,class);
+		CREATE INDEX IF NOT EXISTS entries_scan_kind_size ON entries(scan_id,kind,size DESC);
+		INSERT OR IGNORE INTO entry_classes(scan_id,entry_id,class)
+		 SELECT entries.scan_id, entries.id, json_each.value FROM entries, json_each(entries.classes);`,
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
@@ -210,6 +241,9 @@ func (s *Store) SaveScan(ctx context.Context, scan model.Scan) error {
 		if err != nil {
 			return err
 		}
+		if err = insertEntryClasses(ctx, tx, scan.ID, entry); err != nil {
+			return err
+		}
 	}
 	for _, relation := range scan.Relations {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO relations(scan_id,from_id,to_id,type) VALUES(?,?,?,?)`, scan.ID, relation.FromID, relation.ToID, relation.Type); err != nil {
@@ -219,7 +253,9 @@ func (s *Store) SaveScan(ctx context.Context, scan model.Scan) error {
 	return tx.Commit()
 }
 
-func (s *Store) Scan(ctx context.Context, id string) (model.Scan, error) {
+// ScanMeta reads a snapshot's metadata, roots and errors without its entries
+// or relations.
+func (s *Store) ScanMeta(ctx context.Context, id string) (model.Scan, error) {
 	var out model.Scan
 	var started, ended string
 	if err := s.db.QueryRowContext(ctx, `SELECT id,started_at,ended_at,error_count,status,partial,truncated,truncation_reason FROM scans WHERE id=?`, id).Scan(&out.ID, &started, &ended, &out.ErrorCount, &out.Status, &out.Partial, &out.Truncated, &out.TruncationReason); err != nil {
@@ -246,33 +282,28 @@ func (s *Store) Scan(ctx context.Context, id string) (model.Scan, error) {
 	if err != nil {
 		return out, err
 	}
+	defer errorRows.Close()
 	for errorRows.Next() {
 		var message string
 		if err := errorRows.Scan(&message); err != nil {
-			errorRows.Close()
 			return out, err
 		}
 		out.Errors = append(out.Errors, message)
 	}
-	if err := errorRows.Close(); err != nil {
-		return out, err
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,root_id,path,relative_path,name,extension,kind,size,mod_time,sha256,classes,git_project,error FROM entries WHERE scan_id=? ORDER BY id`, id)
+	return out, errorRows.Err()
+}
+
+// Scan materializes a whole snapshot including every entry. Only tests, export
+// paths and small snapshots should use it; the application reads on demand.
+func (s *Store) Scan(ctx context.Context, id string) (model.Scan, error) {
+	out, err := s.ScanMeta(ctx, id)
 	if err != nil {
 		return out, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var e model.Entry
-		var mod, classes string
-		if err := rows.Scan(&e.ID, &e.RootID, &e.Path, &e.Relative, &e.Name, &e.Extension, &e.Kind, &e.Size, &mod, &e.SHA256, &classes, &e.GitProject, &e.Error); err != nil {
-			return out, err
-		}
-		e.ModTime, _ = time.Parse(time.RFC3339Nano, mod)
-		_ = json.Unmarshal([]byte(classes), &e.Classes)
-		out.Entries = append(out.Entries, e)
-	}
-	if err := rows.Err(); err != nil {
+	if err := s.EachEntry(ctx, id, func(entry model.Entry) error {
+		out.Entries = append(out.Entries, entry)
+		return nil
+	}); err != nil {
 		return out, err
 	}
 	rr, err := s.db.QueryContext(ctx, `SELECT from_id,to_id,type FROM relations WHERE scan_id=? ORDER BY type,from_id,to_id`, id)

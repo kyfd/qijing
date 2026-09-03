@@ -21,7 +21,7 @@ func seedRecycleScan(t *testing.T, service *Service, root string, paths ...strin
 		t.Fatal(err)
 	}
 	scan := model.Scan{ID: "snapshot-1", Roots: []string{root}, StartedAt: time.Now(), EndedAt: time.Now()}
-	for i, path := range paths {
+	for _, path := range paths {
 		info, err := os.Lstat(path)
 		if err != nil {
 			t.Fatal(err)
@@ -35,12 +35,25 @@ func seedRecycleScan(t *testing.T, service *Service, root string, paths ...strin
 			ModTime: info.ModTime(),
 			Classes: []model.Class{model.ClassRotten},
 		})
-		_ = i
 	}
-	service.manager.mu.Lock()
-	service.manager.latest = scan
-	service.manager.mu.Unlock()
+	installScan(t, service, scan)
 	return scan
+}
+
+// installScan persists the snapshot and leaves the manager holding metadata
+// only, matching production: entries are read back from SQLite on demand.
+// Each call needs a distinct scan id, since a snapshot is written once.
+func installScan(t *testing.T, service *Service, scan model.Scan) {
+	t.Helper()
+	if err := service.db.SaveScan(context.Background(), scan); err != nil {
+		t.Fatal(err)
+	}
+	meta := scan
+	meta.Entries = nil
+	meta.Relations = nil
+	service.manager.mu.Lock()
+	service.manager.latest = meta
+	service.manager.mu.Unlock()
 }
 
 func newRecycleService(t *testing.T) *Service {
@@ -79,9 +92,8 @@ func TestRecycleCandidatesOnlyOffersDisposableClasses(t *testing.T) {
 	scan := seedRecycleScan(t, service, root, rotten, keeper)
 	// The second entry is a merely large, dormant file: never a candidate.
 	scan.Entries[1].Classes = []model.Class{model.ClassGiant, model.ClassDormant}
-	service.manager.mu.Lock()
-	service.manager.latest = scan
-	service.manager.mu.Unlock()
+	scan.ID = "snapshot-classes"
+	installScan(t, service, scan)
 
 	candidates := service.RecycleCandidates(context.Background())
 	if len(candidates.Candidates) != 1 || candidates.Candidates[0].Path != rotten {

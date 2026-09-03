@@ -3,8 +3,8 @@ package application
 
 import (
 	"github.com/kyfd/qijing/internal/agent"
-	"github.com/kyfd/qijing/internal/model"
 	"github.com/kyfd/qijing/internal/privacy"
+	"github.com/kyfd/qijing/internal/store"
 )
 
 // RootDTO is one explicitly authorized filesystem root.
@@ -179,14 +179,13 @@ type ScanResultDTO struct {
 	Report agent.Report `json:"report"`
 }
 
-func stats(scan model.Scan) StatsDTO {
-	var out StatsDTO
-	for _, entry := range scan.Entries {
-		if entry.Kind == model.KindFile {
-			out.Files++
-			out.Bytes += entry.Size
-		}
+// statsFrom converts the store's whole-snapshot aggregate into the header
+// numbers. Recommendations reports how many suggestions the list can actually
+// show, which is the flagged population capped at the list limit.
+func statsFrom(aggregate store.ScanStats) StatsDTO {
+	out := StatsDTO{Files: aggregate.Files, Bytes: aggregate.Bytes, Recommendations: int(aggregate.Flagged)}
+	if out.Recommendations > recommendationLimit {
+		out.Recommendations = recommendationLimit
 	}
-	out.Recommendations = len(recommendations(scan))
 	return out
 }

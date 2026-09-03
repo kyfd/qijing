@@ -81,7 +81,7 @@ func New(options Options) (*Service, error) {
 		return nil, err
 	}
 	cfg.Roots = validatePersistedRoots(roots)
-	latest, err := db.LatestScan(context.Background())
+	latest, err := db.LatestScanMeta(context.Background())
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		db.Close()
 		return nil, fmt.Errorf("restore latest scan: %w", err)
@@ -98,7 +98,7 @@ func New(options Options) (*Service, error) {
 		}
 	}
 	svc := &Service{db: db, cfg: cfg, manager: newScanManager(options.Context, db, latest, factory), recycle: newRecycleManager()}
-	svc.agent = newAgentManager(db, options.Model, options.Secrets, filepath.Join(options.DataDir, "secrets"), svc.agentSnapshot)
+	svc.agent = newAgentManager(db, options.Model, options.Secrets, filepath.Join(options.DataDir, "secrets"), svc.snapshotMeta)
 	return svc, nil
 }
 
@@ -258,14 +258,15 @@ func (s *Service) scanRunning() bool {
 	return state != ScanIdle
 }
 
-func (s *Service) Status(context.Context) StatusDTO {
+func (s *Service) Status(ctx context.Context) StatusDTO {
 	scan, state, taskID, taskResult, lastErr, progress, hasProgress := s.manager.snapshot()
 	lastScan := ""
 	if !scan.EndedAt.IsZero() {
 		lastScan = scan.EndedAt.Local().Format("2006-01-02 15:04")
 	}
 	network, _ := s.db.NetworkEnabled(context.Background(), defaultProfileID)
-	status := StatusDTO{Scanning: state != ScanIdle, State: state, ScanID: taskID, TaskResult: taskResult, LastScan: lastScan, LastError: lastErr, Stats: stats(scan), ScanReadOnly: true, Network: network, Partial: scan.Partial, Truncated: scan.Truncated, TruncationCause: scan.TruncationReason, ErrorCount: scan.ErrorCount}
+	aggregate, _ := s.db.EntryStats(ctx, scan.ID)
+	status := StatusDTO{Scanning: state != ScanIdle, State: state, ScanID: taskID, TaskResult: taskResult, LastScan: lastScan, LastError: lastErr, Stats: statsFrom(aggregate), ScanReadOnly: true, Network: network, Partial: scan.Partial, Truncated: scan.Truncated, TruncationCause: scan.TruncationReason, ErrorCount: scan.ErrorCount}
 	if hasProgress && state != ScanIdle {
 		status.Progress = &ScanProgressDTO{
 			Phase: string(progress.Phase), ObservedEntries: progress.ObservedEntries, Files: progress.Files,
@@ -277,18 +278,27 @@ func (s *Service) Status(context.Context) StatusDTO {
 			ErrorBudget:    ProgressBudgetDTO{Limit: int64(progress.ErrorBudget), Used: int64(progress.Errors)},
 			DurationBudget: ProgressBudgetDTO{Limit: progress.DurationBudget.Milliseconds(), Used: progress.Elapsed.Milliseconds()},
 			Cancelling:     progress.Cancelling || state == ScanCancelling, BudgetTruncated: progress.BudgetTruncated,
-			Paused:         progress.Paused || state == ScanPaused,
+			Paused:           progress.Paused || state == ScanPaused,
 			TruncationReason: progress.TruncationReason,
 		}
 	}
 	return status
 }
 
+// Map renders the top-N largest observed files as a spatial view. Both the
+// nodes and the counters come from indexed queries, so the response cost does
+// not grow with snapshot size. NodesTotal states how much is not drawn.
 func (s *Service) Map(ctx context.Context) MapDTO {
 	scan, _, _, _, _, _, _ := s.manager.snapshot()
 	ignored, _ := s.db.IgnoredRecommendations(ctx, scan.ID)
-	total := len(mapEntries(scan))
-	out := MapDTO{Nodes: buildNodes(scan, false), Stats: stats(scan), Recommendations: recommendationsFiltered(scan, ignored), NodesTotal: total}
+	aggregate, _ := s.db.EntryStats(ctx, scan.ID)
+	entries, total, err := s.db.LargestEntries(ctx, scan.ID, mapNodeLimit)
+	if err != nil {
+		// A failed read renders an empty map rather than a partial one that
+		// would imply the snapshot is smaller than it is.
+		return MapDTO{Nodes: []NodeDTO{}, Stats: statsFrom(aggregate), Recommendations: []RecommendationDTO{}}
+	}
+	out := MapDTO{Nodes: nodesFromEntries(entries, false), Stats: statsFrom(aggregate), Recommendations: s.recommendations(ctx, scan.ID, ignored), NodesTotal: total}
 	if total > len(out.Nodes) {
 		out.NodesTruncated = true
 		out.NodesOmitted = total - len(out.Nodes)
@@ -296,14 +306,13 @@ func (s *Service) Map(ctx context.Context) MapDTO {
 	return out
 }
 
-func (s *Service) Node(_ context.Context, id string) (NodeDTO, error) {
+func (s *Service) Node(ctx context.Context, id string) (NodeDTO, error) {
 	scan, _, _, _, _, _, _ := s.manager.snapshot()
-	for _, entry := range scan.Entries {
-		if entry.ID == id {
-			return nodeFromEntry(entry, true, 0), nil
-		}
+	entry, err := s.db.Entry(ctx, scan.ID, id)
+	if err != nil {
+		return NodeDTO{}, ErrNodeNotFound
 	}
-	return NodeDTO{}, ErrNodeNotFound
+	return nodeFromEntry(entry, true, 0), nil
 }
 
 func (s *Service) Reveal(ctx context.Context, id string) (RevealDTO, error) {
@@ -323,6 +332,11 @@ func (s *Service) Reveal(ctx context.Context, id string) (RevealDTO, error) {
 func (s *Service) Privacy(ctx context.Context) PrivacyDTO {
 	scan, _, _, _, _, _, _ := s.manager.snapshot()
 	recycled, _ := s.db.RecycledItems(ctx, 500)
+	// The agent-visible view is built by streaming the snapshot past the
+	// isolator one entry at a time; no privileged copy is materialized.
+	agentPayload, _ := privacy.IsolateStream(scan, func(visit func(model.Entry) error) error {
+		return s.db.EachEntry(ctx, scan.ID, visit)
+	})
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	capabilities := CapabilitiesDTO{
@@ -331,7 +345,7 @@ func (s *Service) Privacy(ctx context.Context) PrivacyDTO {
 		AuthorizedRootCount: len(s.cfg.Roots),
 		RecycledItemCount:   len(recycled),
 	}
-	return PrivacyDTO{Capabilities: capabilities, AgentPayload: privacy.Isolate(scan), ExcludedNames: append([]string(nil), s.cfg.ExcludedNames...)}
+	return PrivacyDTO{Capabilities: capabilities, AgentPayload: agentPayload, ExcludedNames: append([]string(nil), s.cfg.ExcludedNames...)}
 }
 
 func (s *Service) Demo(context.Context) DemoDTO { return DemoDTO{Nodes: demoNodes()} }
@@ -341,7 +355,7 @@ func (s *Service) IgnoreRecommendation(ctx context.Context, id string) error {
 	if scan.ID == "" {
 		return ErrNodeNotFound
 	}
-	for _, recommendation := range recommendations(scan) {
+	for _, recommendation := range s.recommendations(ctx, scan.ID, nil) {
 		if recommendation.ID == id {
 			return s.db.IgnoreRecommendation(ctx, scan.ID, id)
 		}
@@ -349,7 +363,12 @@ func (s *Service) IgnoreRecommendation(ctx context.Context, id string) error {
 	return ErrNodeNotFound
 }
 
-func (s *Service) agentSnapshot() model.Scan {
+// snapshotID reports which snapshot the application currently presents.
+func (s *Service) snapshotID() string { return s.snapshotMeta().ID }
+
+// snapshotMeta returns the current snapshot's metadata. Entries are never
+// carried here; they are read from the store on demand.
+func (s *Service) snapshotMeta() model.Scan {
 	scan, _, _, _, _, _, _ := s.manager.snapshot()
 	return scan
 }
@@ -431,27 +450,12 @@ func firstEqualFold(paths []string, target string) int {
 // reports the omission rather than letting the canvas imply completeness.
 const mapNodeLimit = 180
 
-func buildNodes(scan model.Scan, paths bool) []NodeDTO {
-	entries := mapEntries(scan)
-	if len(entries) > mapNodeLimit {
-		entries = entries[:mapNodeLimit]
-	}
+func nodesFromEntries(entries []model.Entry, paths bool) []NodeDTO {
 	nodes := make([]NodeDTO, 0, len(entries))
 	for i, entry := range entries {
 		nodes = append(nodes, nodeFromEntry(entry, paths, i))
 	}
 	return nodes
-}
-
-func mapEntries(scan model.Scan) []model.Entry {
-	entries := make([]model.Entry, 0, len(scan.Entries))
-	for _, entry := range scan.Entries {
-		if entry.Kind == model.KindFile || entry.GitProject {
-			entries = append(entries, entry)
-		}
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Size > entries[j].Size })
-	return entries
 }
 
 func nodeFromEntry(entry model.Entry, paths bool, index int) NodeDTO {
@@ -514,18 +518,29 @@ func zoneFor(entry model.Entry) (string, int, string) {
 	return "active", 82, "近期仍有变化，生态状态活跃。"
 }
 
-func recommendations(scan model.Scan) []RecommendationDTO { return recommendationsFiltered(scan, nil) }
+// recommendationLimit caps the suggestion list. Suggestions are reviewed one
+// by one by the user, so a longer list is noise rather than information.
+const recommendationLimit = 30
 
-func recommendationsFiltered(scan model.Scan, ignored map[string]bool) []RecommendationDTO {
-	var out []RecommendationDTO
-	for _, entry := range scan.Entries {
+// recommendations lists entries the heuristics flagged, minus the ones the
+// user chose to ignore. The flagged set is an index seek; ignored ids are
+// filtered afterwards, so the query stays independent of that choice.
+func (s *Service) recommendations(ctx context.Context, scanID string, ignored map[string]bool) []RecommendationDTO {
+	if scanID == "" {
+		return []RecommendationDTO{}
+	}
+	// Read past the limit so ignoring an entry does not shorten the list.
+	entries, err := s.db.FlaggedEntries(ctx, scanID, nil, recommendationLimit+len(ignored))
+	if err != nil {
+		return []RecommendationDTO{}
+	}
+	out := make([]RecommendationDTO, 0, recommendationLimit)
+	for _, entry := range entries {
 		if ignored[entry.ID] {
 			continue
 		}
-		if len(entry.Classes) > 1 || (len(entry.Classes) == 1 && entry.Classes[0] != model.ClassActive) {
-			out = append(out, RecommendationDTO{ID: entry.ID, NodeID: entry.ID})
-		}
-		if len(out) >= 30 {
+		out = append(out, RecommendationDTO{ID: entry.ID, NodeID: entry.ID})
+		if len(out) >= recommendationLimit {
 			break
 		}
 	}

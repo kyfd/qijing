@@ -198,28 +198,44 @@ func TestScanManagerPauseAndResumeStateTransitions(t *testing.T) {
 	}
 }
 
-func TestBuildNodesReportsTruncation(t *testing.T) {
-	entries := make([]model.Entry, mapNodeLimit+25)
-	for i := range entries {
-		entries[i] = model.Entry{ID: fmt.Sprintf("e%d", i), Kind: model.KindFile, Size: int64(i + 1), ModTime: time.Now()}
+// The map is drawn from a bounded query, so it must report honestly how much
+// of the snapshot it is not showing, and the stats header must still describe
+// every file rather than only the drawn ones.
+func TestMapReportsTruncationAgainstFullSnapshot(t *testing.T) {
+	service, err := New(Options{DataDir: t.TempDir(), ScanFactory: inProcessScanFactory})
+	if err != nil {
+		t.Fatal(err)
 	}
-	scan := model.Scan{ID: "s", Entries: entries}
+	defer closeService(t, service)
 
-	nodes := buildNodes(scan, false)
-	if len(nodes) != mapNodeLimit {
-		t.Fatalf("nodes = %d, want %d", len(nodes), mapNodeLimit)
+	entries := make([]model.Entry, mapNodeLimit+25)
+	var wantBytes int64
+	for i := range entries {
+		entries[i] = model.Entry{ID: fmt.Sprintf("e%04d", i), Kind: model.KindFile, Size: int64(i + 1), ModTime: time.Now()}
+		wantBytes += int64(i + 1)
+	}
+	scan := model.Scan{ID: "map-scan", StartedAt: time.Now(), EndedAt: time.Now(), Status: model.ScanStatusComplete, Entries: entries}
+	if err := service.db.SaveScan(context.Background(), scan); err != nil {
+		t.Fatal(err)
+	}
+	// The manager holds metadata only; the map reads the entries from SQLite.
+	service.manager.mu.Lock()
+	service.manager.latest = model.Scan{ID: scan.ID, StartedAt: scan.StartedAt, EndedAt: scan.EndedAt, Status: scan.Status}
+	service.manager.mu.Unlock()
+
+	view := service.Map(context.Background())
+	if len(view.Nodes) != mapNodeLimit {
+		t.Fatalf("nodes = %d, want %d", len(view.Nodes), mapNodeLimit)
 	}
 	// Truncation must keep the largest entries, not an arbitrary slice.
-	if nodes[0].Size != int64(len(entries)) {
-		t.Fatalf("largest node size = %d, want %d", nodes[0].Size, len(entries))
+	if view.Nodes[0].Size != int64(len(entries)) {
+		t.Fatalf("largest node size = %d, want %d", view.Nodes[0].Size, len(entries))
 	}
-	if total := len(mapEntries(scan)); total != len(entries) {
-		t.Fatalf("mapEntries = %d, want %d", total, len(entries))
+	if !view.NodesTruncated || view.NodesTotal != len(entries) || view.NodesOmitted != len(entries)-mapNodeLimit {
+		t.Fatalf("truncation reported as total=%d omitted=%d truncated=%v", view.NodesTotal, view.NodesOmitted, view.NodesTruncated)
 	}
-
-	// Stats must still describe every file, not just the drawn ones.
-	if got := stats(scan).Files; got != int64(len(entries)) {
-		t.Fatalf("stats.Files = %d, want %d", got, len(entries))
+	if view.Stats.Files != int64(len(entries)) || view.Stats.Bytes != wantBytes {
+		t.Fatalf("stats = %+v, want %d files / %d bytes", view.Stats, len(entries), wantBytes)
 	}
 }
 
