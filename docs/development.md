@@ -226,6 +226,41 @@ go build -tags production -trimpath `
 - API 不存在永久删除、移动、重命名或写文件端点；回收端点必须要求有效的一次性确认令牌；
 - 模型响应和文件名中的指令性文本不能触发权限变化或文件操作。
 
+### 扫描基准（qijing-bench）
+
+性能数字必须可复现，并且必须和产生它的环境与构建一起给出。
+`cmd/qijing-bench` 生成确定性的合成夹具并测量扫描：
+
+```powershell
+go build -o build\qijing-bench.exe .\cmd\qijing-bench
+.\build\qijing-bench.exe --work E:\qijing-bench --files 100000
+```
+
+- `--work` 必填：夹具与报告只写在这个目录里，工具不碰其他位置。
+- `--files` 控制标准夹具规模；`--million` 追加 100 万文件场景。
+- `--subprocess` 测量产品实际使用的 `qijing-scanner` 子进程路径，
+  默认测量进程内扫描器以隔离遍历成本。
+
+夹具由 `Fixture{Files,Dirs,FileBytes,Seed}` 完全决定，写入固定的修改
+时间，因此同一规格在任何机器上都是同一棵树；已存在且规格匹配的夹具
+会被复用而不是重建。
+
+报告同时写出 `report.json` 与 `report.md`，包含应用版本、VCS 修订
+（工作区不干净时标记 `+dirty`）、Go 版本、Windows 版本、CPU 型号与
+核心数、内存、目标卷的总线类型与驱动器类型。
+
+报告的诚实边界，必须随数字一起引用：
+
+- 夹具在测量前刚写入，缓存是热的；产品不申请清空 Windows 文件缓存
+  所需的权限，所以报告不给出冷缓存推断值。
+- 峰值内存是测量进程 working set 的高水位，覆盖整轮运行，不是对单次
+  扫描的归因。
+- 子进程 CPU 来自 Job Object 记账；进程内引擎没有子进程，标记为
+  「未测量」而不是 0。
+- 每个场景只跑一次，不做多轮平均，因此数字不代表方差。
+
+不要在文档、界面或发布说明里引用没有对应报告文件的数字。
+
 ## 手动验证
 
 只使用临时演示目录：

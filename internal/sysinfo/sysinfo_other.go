@@ -23,3 +23,7 @@ func Collect(volume string) (Info, error) {
 	return Info{OS: runtime.GOOS, Arch: runtime.GOARCH, LogicalCPUs: runtime.NumCPU(),
 		Volume: volume, DiskBusType: "unknown", DriveKind: "unknown"}, nil
 }
+
+// PeakWorkingSetBytes is unavailable off Windows. It reports ok=false rather
+// than a substitute number, so a report never contains an invented figure.
+func PeakWorkingSetBytes() (uint64, bool) { return 0, false }

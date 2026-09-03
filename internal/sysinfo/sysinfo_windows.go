@@ -66,6 +66,9 @@ type memoryStatusEx struct {
 var (
 	kernel32           = windows.NewLazySystemDLL("kernel32.dll")
 	globalMemoryStatus = kernel32.NewProc("GlobalMemoryStatusEx")
+	// K32GetProcessMemoryInfo lives in kernel32 on Windows 7+, so the
+	// benchmark does not need to link psapi separately.
+	getProcessMemoryInfo = kernel32.NewProc("K32GetProcessMemoryInfo")
 )
 
 func totalRAMGiB() (float64, bool) {
@@ -77,6 +80,37 @@ func totalRAMGiB() (float64, bool) {
 	}
 	_ = err
 	return float64(status.totalPhys) / (1 << 30), true
+}
+
+// processMemoryCounters mirrors PROCESS_MEMORY_COUNTERS. Only PeakWorkingSetSize
+// is read; the rest is declared so the struct size matches what the API expects.
+type processMemoryCounters struct {
+	cb                         uint32
+	pageFaultCount             uint32
+	peakWorkingSetSize         uintptr
+	workingSetSize             uintptr
+	quotaPeakPagedPoolUsage    uintptr
+	quotaPagedPoolUsage        uintptr
+	quotaPeakNonPagedPoolUsage uintptr
+	quotaNonPagedPoolUsage     uintptr
+	pagefileUsage              uintptr
+	peakPagefileUsage          uintptr
+}
+
+// PeakWorkingSetBytes reports the current process's peak working set, which is
+// the memory figure a benchmark can state without modelling the allocator.
+// It reports ok=false when the API fails rather than returning a guess.
+func PeakWorkingSetBytes() (uint64, bool) {
+	var counters processMemoryCounters
+	counters.cb = uint32(unsafe.Sizeof(counters))
+	result, _, _ := getProcessMemoryInfo.Call(
+		uintptr(windows.CurrentProcess()),
+		uintptr(unsafe.Pointer(&counters)),
+		uintptr(counters.cb))
+	if result == 0 {
+		return 0, false
+	}
+	return uint64(counters.peakWorkingSetSize), true
 }
 
 func cpuModelFromRegistry() string {
