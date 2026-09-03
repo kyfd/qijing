@@ -33,6 +33,8 @@ const MaxFrameBytes = 8 << 20
 const (
 	TypeHello     = "hello"     // client → server
 	TypeScan      = "scan"      // client → server
+	TypePause     = "pause"     // client → server
+	TypeResume    = "resume"    // client → server
 	TypeCancel    = "cancel"    // client → server
 	TypeHelloAck  = "hello_ack" // server → client
 	TypeProgress  = "progress"  // server → client
@@ -121,6 +123,14 @@ type ScanRequest struct {
 	Options    ScanOptions `json:"options"`
 }
 
+type Pause struct {
+	JobID string `json:"job_id,omitempty"`
+}
+
+type Resume struct {
+	JobID string `json:"job_id,omitempty"`
+}
+
 type Cancel struct {
 	JobID string `json:"job_id,omitempty"`
 }
@@ -173,6 +183,8 @@ type Message struct {
 	Type      string          `json:"type"`
 	Hello     *Hello          `json:"hello,omitempty"`
 	Scan      *ScanRequest    `json:"scan,omitempty"`
+	Pause     *Pause          `json:"pause,omitempty"`
+	Resume    *Resume         `json:"resume,omitempty"`
 	Cancel    *Cancel         `json:"cancel,omitempty"`
 	HelloAck  *HelloAck       `json:"hello_ack,omitempty"`
 	Progress  *Progress       `json:"progress,omitempty"`
@@ -187,7 +199,7 @@ type Message struct {
 func (m *Message) Validate() error {
 	count := 0
 	for _, present := range []bool{
-		m.Hello != nil, m.Scan != nil, m.Cancel != nil, m.HelloAck != nil,
+		m.Hello != nil, m.Scan != nil, m.Pause != nil, m.Resume != nil, m.Cancel != nil, m.HelloAck != nil,
 		m.Progress != nil, m.Entries != nil, m.Relations != nil, m.Done != nil, m.Fatal != nil,
 	} {
 		if present {
@@ -211,6 +223,14 @@ func (m *Message) Validate() error {
 	case TypeScan:
 		if m.Scan == nil {
 			return errors.New("type mismatch: scan")
+		}
+	case TypePause:
+		if m.Pause == nil {
+			return errors.New("type mismatch: pause")
+		}
+	case TypeResume:
+		if m.Resume == nil {
+			return errors.New("type mismatch: resume")
 		}
 	case TypeCancel:
 		if m.Cancel == nil {

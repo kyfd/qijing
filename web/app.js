@@ -254,6 +254,8 @@
         if (scanController) scanController.abort();
         return result;
       },
+      pauseScan: () => request('/scan/pause', { method: 'POST' }),
+      resumeScan: () => request('/scan/resume', { method: 'POST' }),
       map: () => request('/map'),
       node: (id) => request(`/nodes/${encodeURIComponent(id)}`),
       revealNode: (id) => request(`/nodes/${encodeURIComponent(id)}/reveal`, { method: 'POST' }),
@@ -340,6 +342,32 @@
     button.classList.toggle('scanning', scanning); button.classList.toggle('cancelling', cancelling);
     button.setAttribute('aria-label', scanning ? '取消扫描' : '开始扫描');
     label.textContent = cancelling ? '正在取消…' : (scanning ? '取消扫描' : '开始扫描');
+    updatePauseButton();
+  }
+  function updatePauseButton() {
+    const button = $('#pauseBtn'), label = button.querySelector('span:last-child');
+    button.hidden = !state.scanning;
+    button.classList.toggle('scanning', state.scanPaused);
+    button.setAttribute('aria-label', state.scanPaused ? '继续扫描' : '暂停扫描');
+    label.textContent = state.scanPaused ? '继续扫描' : '暂停扫描';
+  }
+  async function togglePause() {
+    if (!state.scanning || state.cancelling) return;
+    try {
+      if (state.scanPaused) {
+        await adapter.resumeScan();
+        state.scanPaused = false;
+        toast('已继续扫描');
+      } else {
+        await adapter.pauseScan();
+        state.scanPaused = true;
+        toast('已暂停扫描，扫描进程保持等待');
+      }
+      updatePauseButton();
+    } catch (error) {
+      toast(adapter.mode === 'desktop' ? desktopError('暂停/继续扫描', error) : `操作失败：${error.message || '本地服务未响应'}`);
+      beginStatusPolling();
+    }
   }
   async function bootstrap() {
     try {
@@ -356,6 +384,8 @@
   }
   function applyStatus(status = {}) {
     const scanning = isScanning(status);
+    const paused = Boolean(status.progress?.paused || status.progress?.Paused) && scanning;
+    if (state.scanPaused !== paused) { state.scanPaused = paused; updatePauseButton(); }
     if (scanning && !state.scanProgress.startedAt) state.scanProgress.startedAt = Date.now();
     setScanUI(scanning, state.cancelling && scanning);
     renderScanProgress(status);
@@ -1020,7 +1050,7 @@
   canvas.addEventListener('pointerleave',()=>{$('#mapTooltip').hidden=true;state.hover=null;draw();});
   canvas.addEventListener('wheel',e=>{e.preventDefault();const r=stage.getBoundingClientRect();zoom(e.deltaY<0?1.12:.89,e.clientX-r.left,e.clientY-r.top);},{passive:false});
   $('#zoomIn').onclick=()=>zoom(1.18);$('#zoomOut').onclick=()=>zoom(.84);$('#resetView').onclick=()=>{fitView();draw();};
-  $('#scanBtn').onclick=startScan;$('#demoBtn').onclick=startDemo;$('#settingsBtn').onclick=()=>{$('#settingsDialog').showModal();loadDrives();};$('#emptyRootBtn').onclick=()=>{$('#settingsDialog').showModal();loadDrives();};$('#privacyBtn').onclick=openPrivacy;$('#addRootBtn').onclick=addRoot;$('#chooseRootBtn').onclick=chooseRoot;$('#computerScanBtn').onclick=openComputerScan;$('#confirmComputerScanBtn').onclick=confirmComputerScan;
+  $('#scanBtn').onclick=startScan;$('#pauseBtn').onclick=togglePause;$('#demoBtn').onclick=startDemo;$('#settingsBtn').onclick=()=>{$('#settingsDialog').showModal();loadDrives();};$('#emptyRootBtn').onclick=()=>{$('#settingsDialog').showModal();loadDrives();};$('#privacyBtn').onclick=openPrivacy;$('#addRootBtn').onclick=addRoot;$('#chooseRootBtn').onclick=chooseRoot;$('#computerScanBtn').onclick=openComputerScan;$('#confirmComputerScanBtn').onclick=confirmComputerScan;
   $('#agentPatrolBtn').onclick=openAgentPreview;$('#confirmAgentBtn').onclick=confirmAgentRun;$('#cancelAgentBtn').onclick=cancelAgentRun;$('#closeAgentDrawer').onclick=()=>{ $('#agentDrawer').classList.remove('open');$('#agentDrawer').setAttribute('aria-hidden','true');$('#backdrop').hidden=true; };$('#saveAgentBtn').onclick=saveAgentSettings;$('#testAgentBtn').onclick=testAgentConnection;
   $('.settings-tabs').onclick=e=>{const b=e.target.closest('[data-settings-tab]');if(b)switchSettingsTab(b.dataset.settingsTab);};$('.audit-tabs').onclick=e=>{const b=e.target.closest('[data-audit-tab]');if(b)switchAuditTab(b.dataset.auditTab);};
   $('#networkEnabled').onchange=()=>{if(!$('#networkEnabled').checked&&state.agent.running)cancelAgentRun();};

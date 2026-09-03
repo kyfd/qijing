@@ -127,6 +127,77 @@ func mustScanner(t *testing.T, cfg config.Config) ScanEngine {
 	return engine
 }
 
+// pausableEngine is a fake that supports pause/resume and blocks until
+// released, so the manager's state machine can be exercised.
+type pausableEngine struct {
+	block   chan struct{}
+	started chan struct{}
+	pauses  int
+	resumes int
+}
+
+func (e *pausableEngine) Scan(ctx context.Context) (model.Scan, error) {
+	close(e.started)
+	select {
+	case <-e.block:
+	case <-ctx.Done():
+		return model.Scan{ID: "paused-test", Status: model.ScanStatusCancelled}, ctx.Err()
+	}
+	return model.Scan{ID: "paused-test", Status: model.ScanStatusComplete}, nil
+}
+func (e *pausableEngine) Pause() error  { e.pauses++; return nil }
+func (e *pausableEngine) Resume() error { e.resumes++; return nil }
+
+func TestScanManagerPauseAndResumeStateTransitions(t *testing.T) {
+	service, err := New(Options{DataDir: t.TempDir(), ScanFactory: inProcessScanFactory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeService(t, service)
+	root := t.TempDir()
+	if _, err := service.AddRoot(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	engine := &pausableEngine{block: make(chan struct{}), started: make(chan struct{})}
+	service.manager.mu.Lock()
+	service.manager.factory = func(config.Config) (ScanEngine, error) { return engine, nil }
+	service.manager.mu.Unlock()
+	if err := service.PauseScan(context.Background()); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("pausing an idle scan err=%v", err)
+	}
+	if _, err := service.StartScan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	<-engine.started
+	if err := service.ResumeScan(context.Background()); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("resuming a running scan err=%v", err)
+	}
+	if err := service.PauseScan(context.Background()); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if _, state, _, _, _, _, _ := service.manager.snapshot(); state != ScanPaused {
+		t.Fatalf("state = %q, want paused", state)
+	}
+	if err := service.PauseScan(context.Background()); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("double pause err=%v", err)
+	}
+	// Root mutation stays blocked while paused.
+	if _, err := service.AddRoot(context.Background(), t.TempDir()); !errors.Is(err, ErrScanRunning) {
+		t.Fatalf("add root while paused err=%v", err)
+	}
+	if err := service.ResumeScan(context.Background()); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if _, state, _, _, _, _, _ := service.manager.snapshot(); state != ScanRunning {
+		t.Fatalf("state = %q, want running", state)
+	}
+	close(engine.block)
+	waitIdle(t, service)
+	if engine.pauses != 1 || engine.resumes != 1 {
+		t.Fatalf("pauses=%d resumes=%d", engine.pauses, engine.resumes)
+	}
+}
+
 func TestBuildNodesReportsTruncation(t *testing.T) {
 	entries := make([]model.Entry, mapNodeLimit+25)
 	for i := range entries {

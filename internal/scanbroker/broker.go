@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -102,9 +103,55 @@ func (o *Options) defaults() {
 
 // Scan is one spawn-to-completion scan. It satisfies the application layer's
 // scanEngine contract: constructed with configuration, run with a context.
+// It is pausable while the conversation is live.
 type Scan struct {
 	opts Options
+
+	streamMu sync.Mutex
+	stream   *scanproto.Conn
+	paused   bool
+
+	childCPUSeconds float64
 }
+
+// ChildCPUSeconds reports the scanner subprocess's total user+kernel CPU
+// time for the last scan (job accounting; zero when unavailable). The
+// benchmark suite records it.
+func (s *Scan) ChildCPUSeconds() float64 { return s.childCPUSeconds }
+
+// Pause asks the scanner to suspend producing output. Pausing is
+// idempotent; a paused scan keeps its heartbeat alive and can be resumed
+// or cancelled.
+func (s *Scan) Pause() error {
+	return s.togglePause(true)
+}
+
+// Resume continues a paused scan. Resuming a running scan is a no-op.
+func (s *Scan) Resume() error {
+	return s.togglePause(false)
+}
+
+func (s *Scan) togglePause(paused bool) error {
+	s.streamMu.Lock()
+	stream, unchanged := s.stream, s.paused == paused
+	s.paused = paused
+	s.streamMu.Unlock()
+	if stream == nil {
+		return ErrNotConnected
+	}
+	if unchanged {
+		return nil
+	}
+	message := scanproto.Message{Type: scanproto.TypePause, Pause: &scanproto.Pause{}}
+	if !paused {
+		message = scanproto.Message{Type: scanproto.TypeResume, Resume: &scanproto.Resume{}}
+	}
+	return stream.Send(message)
+}
+
+// ErrNotConnected reports that the scan is not currently talking to a
+// scanner process.
+var ErrNotConnected = errors.New("scan is not connected to a scanner process")
 
 func New(opts Options) *Scan {
 	opts.defaults()
@@ -171,16 +218,21 @@ func (s *Scan) spawnAndConverse(ctx context.Context, snapshotID string, roots []
 	if err := cmd.Start(); err != nil {
 		return model.Scan{}, fmt.Errorf("start scanner process: %w", err)
 	}
-	stopJob, err := assignJobObject(cmd)
+	stopJob, queryChildCPU, err := assignJobObject(cmd)
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 		return model.Scan{}, fmt.Errorf("contain scanner process: %w", err)
 	}
-	// stopJob closes the kill-on-close job handle; combined with the
-	// terminate below it guarantees the subprocess cannot outlive us,
-	// including when this process is killed outright.
-	defer func() { _ = stopJob() }()
+	// Sample child CPU before the job handle closes. The kill-on-close
+	// job plus terminate below still guarantee the subprocess cannot
+	// outlive us, including when this process is killed outright.
+	defer func() {
+		if queryChildCPU != nil {
+			s.childCPUSeconds = queryChildCPU()
+		}
+		_ = stopJob()
+	}()
 	defer s.terminate(cmd)
 
 	conn, err := ipcpipe.Dial(name, s.opts.ConnectTimeout)
@@ -206,6 +258,16 @@ func (s *Scan) converse(ctx context.Context, conn ipcpipe.Conn, roots []string, 
 		}
 	}
 	stream := scanproto.NewConn(conn)
+	s.streamMu.Lock()
+	s.stream = stream
+	s.paused = false
+	s.streamMu.Unlock()
+	defer func() {
+		s.streamMu.Lock()
+		s.stream = nil
+		s.paused = false
+		s.streamMu.Unlock()
+	}()
 	jobID := fmt.Sprintf("scan-%d", time.Now().UnixNano())
 
 	type outcome struct {
@@ -316,6 +378,7 @@ func (s *Scan) talk(ctx context.Context, stream *scanproto.Conn, jobID, snapshot
 		rootIDs[scanner.RootID(root)] = true
 	}
 	entryBudget := s.opts.Config.MaxEntries
+	streamed := 0
 	for {
 		message, err := stream.Receive()
 		if err != nil {
@@ -333,14 +396,18 @@ func (s *Scan) talk(ctx context.Context, stream *scanproto.Conn, jobID, snapshot
 				if err := validateEntry(entry, roots, rootIDs); err != nil {
 					return model.Scan{}, err
 				}
-				if entryBudget > 0 && len(out.Entries) >= entryBudget {
-					return model.Scan{}, errViolation
-				}
-				out.Entries = append(out.Entries, entry)
 			}
-			// The validated batch streams straight to the sink; a slow sink
-			// blocks this loop, which blocks the IPC, which slows the
-			// scanner: bounded memory, honest backpressure.
+			// streamed counts everything the scanner produced, so the budget
+			// bounds the scanner's output independently of what is retained.
+			// out.ErrorCount stays owned by the Done message.
+			streamed += len(message.Entries.Entries)
+			if entryBudget > 0 && streamed > entryBudget {
+				return model.Scan{}, errViolation
+			}
+			out.Entries = append(out.Entries, message.Entries.Entries...)
+			// The validated batch also streams straight to the sink; a slow
+			// sink blocks this loop, which blocks the IPC, which slows the
+			// scanner: honest backpressure instead of an unbounded queue.
 			if s.opts.Sink != nil {
 				if err := s.opts.Sink.WriteEntries(ctx, snapshotID, message.Entries.Entries); err != nil {
 					return model.Scan{}, fmt.Errorf("persist scan output: %w", err)

@@ -58,6 +58,7 @@ type ScanState string
 const (
 	ScanIdle       ScanState = "idle"
 	ScanRunning    ScanState = "running"
+	ScanPaused     ScanState = "paused"
 	ScanCancelling ScanState = "cancelling"
 )
 
@@ -82,6 +83,7 @@ type ScanProgressDTO struct {
 	ErrorBudget      ProgressBudgetDTO `json:"error_budget"`
 	DurationBudget   ProgressBudgetDTO `json:"duration_budget_ms"`
 	Cancelling       bool              `json:"cancelling"`
+	Paused           bool              `json:"paused"`
 	BudgetTruncated  bool              `json:"budget_truncated"`
 	TruncationReason string            `json:"truncation_reason,omitempty"`
 }

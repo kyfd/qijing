@@ -18,7 +18,14 @@ var (
 	ErrNoRoots     = errors.New("authorize at least one root")
 	ErrNoScan      = errors.New("no completed scan")
 	ErrNotRunning  = errors.New("no scan running")
+	ErrNotPausable = errors.New("the running scan cannot be paused")
 )
+
+// pauseEngine marks engines that support suspending a live scan.
+type pauseEngine interface {
+	Pause() error
+	Resume() error
+}
 
 type progressEngine interface {
 	SetProgressCallback(func(scanner.Progress))
@@ -39,6 +46,7 @@ type ScanManager struct {
 	appCancel   context.CancelFunc
 	store       *store.Store
 	factory     scannerFactory
+	engine      ScanEngine
 	latest      model.Scan
 	state       ScanState
 	taskID      string
@@ -92,6 +100,7 @@ func (m *ScanManager) Start(cfg config.Config) (StartScanDTO, error) {
 	if reporting, ok := engine.(progressEngine); ok {
 		reporting.SetProgressCallback(func(progress scanner.Progress) { m.updateProgress(id, progress) })
 	}
+	m.engine = engine
 	go m.run(taskCtx, id, engine)
 	return StartScanDTO{Accepted: true, ScanID: id}, nil
 }
@@ -128,6 +137,7 @@ func (m *ScanManager) run(ctx context.Context, taskID string, engine ScanEngine)
 	}
 	m.state = ScanIdle
 	m.taskCancel = nil
+	m.engine = nil
 	done := m.done
 	m.done = nil
 	m.mu.Unlock()
@@ -173,6 +183,47 @@ func (m *ScanManager) Cancel() error {
 	m.progress.Cancelling = true
 	m.hasProgress = true
 	m.taskCancel()
+	return nil
+}
+
+// Pause suspends the running scan. Output stops flowing; the scanner stays
+// alive and keeps its heartbeat, so the pause can last indefinitely.
+func (m *ScanManager) Pause() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state != ScanRunning {
+		return ErrNotRunning
+	}
+	p, ok := m.engine.(pauseEngine)
+	if !ok {
+		return ErrNotPausable
+	}
+	if err := p.Pause(); err != nil {
+		return err
+	}
+	m.state = ScanPaused
+	m.progress.Paused = true
+	m.hasProgress = true
+	return nil
+}
+
+// Resume continues a paused scan.
+func (m *ScanManager) Resume() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state != ScanPaused {
+		return ErrNotRunning
+	}
+	p, ok := m.engine.(pauseEngine)
+	if !ok {
+		return ErrNotPausable
+	}
+	if err := p.Resume(); err != nil {
+		return err
+	}
+	m.state = ScanRunning
+	m.progress.Paused = false
+	m.hasProgress = true
 	return nil
 }
 

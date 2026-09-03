@@ -78,6 +78,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/roots", s.removeRoot)
 	mux.HandleFunc("POST /api/v1/scan", s.scan)
 	mux.HandleFunc("POST /api/v1/scan/cancel", s.cancelScan)
+	mux.HandleFunc("POST /api/v1/scan/pause", s.pauseScan)
+	mux.HandleFunc("POST /api/v1/scan/resume", s.resumeScan)
 	mux.HandleFunc("GET /api/v1/map", s.ecosystemMap)
 	mux.HandleFunc("GET /api/v1/nodes/{id}", s.node)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/reveal", s.reveal)
@@ -204,6 +206,22 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) cancelScan(w http.ResponseWriter, r *http.Request) {
 	if err := s.app.CancelScan(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (s *Server) pauseScan(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.PauseScan(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (s *Server) resumeScan(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.ResumeScan(r.Context()); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}

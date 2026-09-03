@@ -247,6 +247,12 @@ func (s *Service) StartScan(context.Context) (StartScanDTO, error) {
 
 func (s *Service) CancelScan(context.Context) error { return s.manager.Cancel() }
 
+// PauseScan suspends the running scan; the scanner process stays alive.
+func (s *Service) PauseScan(context.Context) error { return s.manager.Pause() }
+
+// ResumeScan continues a paused scan.
+func (s *Service) ResumeScan(context.Context) error { return s.manager.Resume() }
+
 func (s *Service) scanRunning() bool {
 	_, state, _, _, _, _, _ := s.manager.snapshot()
 	return state != ScanIdle
@@ -271,6 +277,7 @@ func (s *Service) Status(context.Context) StatusDTO {
 			ErrorBudget:    ProgressBudgetDTO{Limit: int64(progress.ErrorBudget), Used: int64(progress.Errors)},
 			DurationBudget: ProgressBudgetDTO{Limit: progress.DurationBudget.Milliseconds(), Used: progress.Elapsed.Milliseconds()},
 			Cancelling:     progress.Cancelling || state == ScanCancelling, BudgetTruncated: progress.BudgetTruncated,
+			Paused:         progress.Paused || state == ScanPaused,
 			TruncationReason: progress.TruncationReason,
 		}
 	}

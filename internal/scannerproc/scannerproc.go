@@ -66,6 +66,19 @@ func Serve(conn ipcpipe.Conn, engine Engine, scannerVersion string, heartbeatEve
 	violations := make(chan error, 1)
 	requests := make(chan scanproto.Message, 4)
 	scanned := false
+	gate := newPauseGate()
+	var progressMu sync.Mutex
+	var lastProgress *scanner.Progress
+	notifyPaused := func(paused bool) {
+		progressMu.Lock()
+		snapshot := scanner.Progress{Paused: paused}
+		if lastProgress != nil {
+			snapshot = *lastProgress
+			snapshot.Paused = paused
+		}
+		progressMu.Unlock()
+		_ = stream.Send(scanproto.Message{Type: scanproto.TypeProgress, Progress: &snapshot})
+	}
 	go func() {
 		defer reader.Done()
 		for {
@@ -87,6 +100,12 @@ func Serve(conn ipcpipe.Conn, engine Engine, scannerVersion string, heartbeatEve
 				requests <- message
 			case scanproto.TypeCancel:
 				cancel()
+			case scanproto.TypePause:
+				gate.setPaused(true)
+				notifyPaused(true)
+			case scanproto.TypeResume:
+				gate.setPaused(false)
+				notifyPaused(false)
 			default:
 				violations <- fmt.Errorf("%w: unexpected client message %q", scanproto.ErrProtocol, message.Type)
 				cancel()
@@ -155,11 +174,24 @@ func Serve(conn ipcpipe.Conn, engine Engine, scannerVersion string, heartbeatEve
 
 	result, runErr := engine.Run(ctx, cfg, request.Scan.SnapshotID,
 		func(progress scanner.Progress) {
-			if err := stream.Send(scanproto.Message{Type: scanproto.TypeProgress, Progress: &progress}); err != nil {
+			// The gate pauses the scan by blocking its callbacks; while
+			// paused only heartbeats keep the connection alive.
+			if err := gate.wait(ctx); err != nil {
+				cancel()
+				return
+			}
+			progressMu.Lock()
+			snapshot := progress
+			lastProgress = &snapshot
+			progressMu.Unlock()
+			if err := stream.Send(scanproto.Message{Type: scanproto.TypeProgress, Progress: &snapshot}); err != nil {
 				cancel()
 			}
 		},
 		func(batch []model.Entry) error {
+			if err := gate.wait(ctx); err != nil {
+				return err
+			}
 			return stream.Send(scanproto.Message{Type: scanproto.TypeEntries, Entries: &scanproto.EntriesBatch{Entries: batch}})
 		},
 	)
@@ -251,4 +283,47 @@ func holdOpen(reader *sync.WaitGroup, grace time.Duration) {
 
 func fatal(code, detail string) scanproto.Message {
 	return scanproto.Message{Type: scanproto.TypeFatal, Fatal: &scanproto.Fatal{Code: code, Detail: detail}}
+}
+
+// pauseGate blocks the scan's output callbacks while the broker has paused
+// the scan. While paused the heartbeat goroutine keeps the connection alive,
+// so the broker's watchdog does not kill a paused scanner.
+type pauseGate struct {
+	mu     sync.Mutex
+	paused bool
+	wake   chan struct{}
+}
+
+func newPauseGate() *pauseGate { return &pauseGate{wake: make(chan struct{})} }
+
+// wait blocks until the scan is resumed or ctx is done. Cancelling a paused
+// scan must still work, so ctx.Done unblocks with an error.
+func (g *pauseGate) wait(ctx context.Context) error {
+	g.mu.Lock()
+	if !g.paused {
+		g.mu.Unlock()
+		return nil
+	}
+	wake := g.wake
+	g.mu.Unlock()
+	select {
+	case <-wake:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (g *pauseGate) setPaused(paused bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if paused == g.paused {
+		return
+	}
+	g.paused = paused
+	if paused {
+		g.wake = make(chan struct{})
+	} else {
+		close(g.wake)
+	}
 }

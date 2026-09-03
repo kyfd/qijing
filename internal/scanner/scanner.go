@@ -63,6 +63,7 @@ type Progress struct {
 	DurationBudget   time.Duration `json:"duration_budget_ns"`
 	Errors           int           `json:"errors"`
 	Cancelling       bool          `json:"cancelling"`
+	Paused           bool          `json:"paused"`
 	BudgetTruncated  bool          `json:"budget_truncated"`
 	TruncationReason string        `json:"truncation_reason,omitempty"`
 }

@@ -4,6 +4,15 @@
 
 ### Trust Hardening（v0.1.x）
 
+- **扫描可暂停 / 继续**：协议新增 `pause`/`resume` 帧，扫描进程在暂停闸门处
+  停止产出条目但保持心跳存活；主进程 `ScanManager.Pause()/Resume()` 与
+  `POST /api/v1/scan/pause|resume` 打通到界面按钮，暂停状态随扫描进度返回。
+  暂停中的扫描仍可取消，取消后 staging 快照按既有规则降级为 incomplete。
+- **扫描子进程 CPU 计量**：Job Object 记账（`JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`）
+  在作业句柄关闭前采样子进程用户态 + 内核态 CPU 时间，供基准测试如实记录；
+  取不到时为 0，不做估算。
+- **基准环境采集**（`internal/sysinfo`）：Windows 版本、CPU 型号与逻辑核心数、
+  物理内存、目标卷的总线类型与驱动器类型，让性能数字带上可复现的环境上下文。
 - **扫描迁入独立进程**：桌面主进程通过 Scanner Broker（`internal/scanbroker`）
   拉起 `qijing-scanner.exe`，以版本化的 Named Pipe IPC（`internal/scanproto` +
   `internal/ipcpipe`）通信：管道 DACL 只允许当前用户连接、8 MiB 帧上限、

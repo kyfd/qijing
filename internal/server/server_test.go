@@ -27,6 +27,30 @@ func inProcessScanFactory(cfg config.Config) (application.ScanEngine, error) {
 	return scanner.New(cfg)
 }
 
+// The pause and resume endpoints reject when no scan is running and accept
+// while one runs.
+func TestPauseResumeEndpoints(t *testing.T) {
+	srv, err := New(Options{DataDir: t.TempDir(), Addr: "127.0.0.1:8765", ScanFactory: inProcessScanFactory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	token := request(t, srv, http.MethodGet, "/api/v1/status", nil, "").Body.String()
+	start := strings.Index(token, "\"token\":\"")
+	if start < 0 {
+		t.Fatalf("status body missing token: %s", token)
+	}
+	token = token[start+len("\"token\":\""):]
+	token = token[:strings.Index(token, "\"")]
+
+	if code := request(t, srv, http.MethodPost, "/api/v1/scan/pause", []byte("{}"), token).Code; code != http.StatusConflict {
+		t.Fatalf("idle pause = %d, want 409", code)
+	}
+	if code := request(t, srv, http.MethodPost, "/api/v1/scan/resume", []byte("{}"), token).Code; code != http.StatusConflict {
+		t.Fatalf("idle resume = %d, want 409", code)
+	}
+}
+
 func TestStatusIncludesNestedProgressSchema(t *testing.T) {
 	srv, err := New(Options{DataDir: t.TempDir(), Addr: "127.0.0.1:8765", ScanFactory: inProcessScanFactory})
 	if err != nil {
