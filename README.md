@@ -1,6 +1,6 @@
 # 栖境
 
-Windows 上的文件观察工具。给你授权过的目录画一张生态地图：谁占空间、哪里在涨、哪些像闲置或重复。观察全程只读；它只看、只说明，除非你逐项确认，否则不碰你的文件。
+Windows 文件观察工具，用来查看授权目录的空间占用、变化和闲置候选。扫描阶段不修改源文件；如需回收文件，必须在整理面板中逐项选择并确认。
 
 点托盘图标打开窗口。默认不联网、不听端口。需要的话可以接 OpenAI 兼容接口做只读巡视，发出去的是匿名汇总，发送前会让你确认。
 
@@ -10,7 +10,7 @@ Windows 上的文件观察工具。给你授权过的目录画一张生态地图
 
 从 [Releases](https://github.com/kyfd/qijing/releases) 下载 `qijing-windows-amd64.zip`，核对 `SHA256SUMS`，然后运行解压出的 `qijing.exe`。
 
-当前 **没有代码签名证书**。Windows SmartScreen 可能会提示“未识别的应用”，这是未签名程序的正常行为，不是已经上架的安装包。没有证书之前不会提供安装程序。
+当前发布包未做代码签名，Windows SmartScreen 可能提示“未识别的应用”。请核对下载来源和校验值；这类提示本身不能证明程序安全。
 
 构建出来的桌面程序：
 
@@ -23,11 +23,11 @@ Windows 上的文件观察工具。给你授权过的目录画一张生态地图
 - 关窗口是藏到托盘，托盘菜单里的「退出」才真正关掉
 - 不会扫 U 盘、光驱、网络盘
 
-请依次看：白名单授权、扫描进度、分类 / 空间分布、发给模型前的匿名 payload、移入回收站前的逐项确认。这些是产品边界，不是装饰。
+使用顺序是授权目录、等待扫描、查看分类和空间分布。调用模型前可以检查待发送的汇总数据；回收文件另有确认步骤。
 
 ## 开发者：从源码构建
 
-不要一上来就为了“点一下看看”去装完整开发环境。只有改代码时才需要 Go 和 WebView2 开发组件。
+使用发布包不需要安装 Go。从源码构建时需要 Go 和 WebView2 开发组件。
 
 ```powershell
 git clone https://github.com/kyfd/qijing.git
@@ -39,7 +39,7 @@ go build -tags production -trimpath `
   .\cmd\ecosystem-desktop
 ```
 
-`go.mod` 声明的是 **Go 1.26.3**，因为这是当前核实过的构建工具链，不是因为代码依赖某个 1.26 补丁特性。更低版本尚未做兼容认证。换图标时先改 `assets/appicon.png` 和 `internal/appicon/appicon.ico`，再跑 `go run .\cmd\icon-resource`。
+`go.mod` 声明 Go 1.26.3，更低版本的兼容性尚未验证。换图标时先改 `assets/appicon.png` 和 `internal/appicon/appicon.ico`，再跑 `go run .\cmd\icon-resource`。
 
 Go module 路径是 `github.com/kyfd/qijing`。
 
@@ -76,7 +76,7 @@ ecosystem privacy
 
 不自动清理，不判断「可以删」，也不保证两个文件内容相同（没开本地哈希时只看元数据）。分类都是启发式，仅供参考。
 
-扫描器进程本身没有任何写文件的能力。回收只由主进程在你确认后执行，且只能移进回收站。应用自己的配置、索引和审计写在私有数据目录里。细节见 [隐私说明](docs/privacy.md)、[隐私控制对照](docs/privacy-controls.md) 和 [架构说明](docs/architecture.md)。
+扫描器代码不执行文件处置，回收由主进程在确认后调用 Windows Shell 完成。这是应用中的职责划分，不代表扫描进程受到操作系统级只读隔离。应用自己的配置、索引和审计写在私有数据目录里。细节见 [隐私说明](docs/privacy.md)、[隐私控制对照](docs/privacy-controls.md) 和 [架构说明](docs/architecture.md)。
 
 ## 文档
 
