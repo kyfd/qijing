@@ -3,6 +3,7 @@ package scannerproc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +53,10 @@ func (f *fakeEngine) Run(ctx context.Context, cfg config.Config, snapshotID stri
 	progress(scanner.Progress{Phase: scanner.PhaseRelations, ObservedEntries: 2})
 	if f.err != nil {
 		return model.Scan{}, f.err
+	}
+	if f.result.ID != "" {
+		f.result.Roots = []string{cfg.Roots[0]}
+		return f.result, nil
 	}
 	f.result = model.Scan{ID: snapshotID, Status: model.ScanStatusComplete, Roots: []string{cfg.Roots[0]}, ErrorCount: 0}
 	return f.result, nil
@@ -292,6 +297,104 @@ func TestServeRejectsUnexpectedClientMessages(t *testing.T) {
 	}
 	if err := <-served; err == nil {
 		t.Fatal("serve must fail on unexpected messages")
+	}
+}
+
+func TestServeStreamsLargeRelationSetInMultipleFrames(t *testing.T) {
+	// Hashing-on scans can derive far more relations than fit in one 8 MiB
+	// frame. Sending them unchunked used to abort the scanner after a
+	// completed traversal (observed as "scanner connection: EOF" on the
+	// broker). The serve loop must split and still deliver every relation.
+	const n = 200_000
+	relations := make([]model.Relation, n)
+	for i := range relations {
+		relations[i] = model.Relation{
+			FromID: fmt.Sprintf("from-%06d", i),
+			ToID:   fmt.Sprintf("to-%06d", i),
+			Type:   model.RelationDuplicate,
+		}
+	}
+	engine := &fakeEngine{result: model.Scan{
+		ID:        "snapshot-1",
+		Status:    model.ScanStatusComplete,
+		Relations: relations,
+	}}
+	client, served := serveOnPipe(t, engine, time.Hour)
+	handshake(t, client, scanproto.Version, "job-1")
+	sendScan(t, client, "job-1", []string{t.TempDir()})
+
+	var got []model.Relation
+	frames := 0
+	var done *scanproto.Done
+	for {
+		message, err := client.Receive()
+		if err != nil {
+			t.Fatalf("receive after %d relation frames / %d relations: %v", frames, len(got), err)
+		}
+		switch message.Type {
+		case scanproto.TypeRelations:
+			got = append(got, message.Relations.Relations...)
+			frames++
+		case scanproto.TypeDone:
+			done = message.Done
+		case scanproto.TypeProgress, scanproto.TypeHeartbeat, scanproto.TypeEntries:
+		default:
+			t.Fatalf("unexpected %s", message.Type)
+		}
+		if done != nil {
+			break
+		}
+	}
+	if frames < 2 {
+		t.Fatalf("relation frames = %d, want at least 2", frames)
+	}
+	if len(got) != n {
+		t.Fatalf("received %d relations, want %d", len(got), n)
+	}
+	if got[0].FromID != relations[0].FromID || got[n-1].FromID != relations[n-1].FromID {
+		t.Fatalf("relation order corrupted: first=%+v last=%+v", got[0], got[n-1])
+	}
+	if done.ScanID != "snapshot-1" || done.Status != model.ScanStatusComplete {
+		t.Fatalf("done = %+v", done)
+	}
+	if err := <-served; err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+}
+
+func TestServeReportsFatalWhenASingleUnsplittableItemCannotFit(t *testing.T) {
+	// A relation whose encoded form cannot fit even as a one-item frame
+	// must fail closed, never be dropped. Dropping it would make the
+	// snapshot look complete while missing a derived link.
+	engine := &fakeEngine{result: model.Scan{
+		ID:     "snapshot-1",
+		Status: model.ScanStatusComplete,
+		Relations: []model.Relation{{
+			FromID: strings.Repeat("f", scanproto.MaxFrameBytes),
+			ToID:   "to",
+			Type:   model.RelationDuplicate,
+		}},
+	}}
+	client, served := serveOnPipe(t, engine, time.Hour)
+	handshake(t, client, scanproto.Version, "job-1")
+	sendScan(t, client, "job-1", []string{t.TempDir()})
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case err := <-served:
+			if err == nil {
+				t.Fatal("serve must fail when a single relation cannot fit a frame")
+			}
+			if !errors.Is(err, scanproto.ErrFrameTooLarge) {
+				t.Fatalf("serve error = %v, want ErrFrameTooLarge", err)
+			}
+			return
+		case <-deadline:
+			t.Fatal("serve did not fail on an unsplittable relation")
+		default:
+			_, _ = client.Receive()
+		}
 	}
 }
 

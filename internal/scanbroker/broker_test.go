@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -252,5 +253,47 @@ func TestBrokerEnforcesEntryBudgetAgainstRogueScanner(t *testing.T) {
 	_, err := s.converse(context.Background(), dialForTest(t, pipe), []string{root}, "snap-test", func() {})
 	if !errors.Is(err, errViolation) {
 		t.Fatalf("expected budget violation, got %v", err)
+	}
+}
+
+func TestStderrTailKeepsOnlyTheLastBytes(t *testing.T) {
+	tail := &stderrTail{limit: 8}
+	if _, err := tail.Write([]byte("abcdefghij")); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(tail.buf); got != "cdefghij" {
+		t.Fatalf("tail = %q, want cdefghij", got)
+	}
+}
+
+func TestStderrTailTextIsSanitized(t *testing.T) {
+	tail := &stderrTail{limit: 4096}
+	payload := "crash at C:\\Users\\alice\\secret.txt after 12 entries"
+	if _, err := tail.Write([]byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+	got := tail.Text()
+	if strings.Contains(got, "alice") || strings.Contains(got, "C:\\") {
+		t.Fatalf("unsanitized stderr text: %q", got)
+	}
+	if !strings.Contains(got, "crash at") || !strings.Contains(got, "<path>") {
+		t.Fatalf("diagnostic lost: %q", got)
+	}
+}
+
+func TestWithChildStderrLeavesSuccessAndEmptyTailsAlone(t *testing.T) {
+	base := errors.New("scanner connection: EOF")
+	if got := withChildStderr(nil, "anything"); got != nil {
+		t.Fatalf("nil error must stay nil, got %v", got)
+	}
+	if got := withChildStderr(base, ""); got != base {
+		t.Fatalf("empty diagnostic must not wrap, got %v", got)
+	}
+	wrapped := withChildStderr(base, "protocol violation: outgoing frame of 10 bytes exceeds the limit")
+	if !errors.Is(wrapped, base) {
+		t.Fatalf("wrapped error lost identity: %v", wrapped)
+	}
+	if !strings.Contains(wrapped.Error(), "scanner: protocol violation") {
+		t.Fatalf("wrapped error missing diagnostic: %v", wrapped)
 	}
 }

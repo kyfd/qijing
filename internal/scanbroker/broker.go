@@ -215,6 +215,8 @@ func (s *Scan) spawnAndConverse(ctx context.Context, snapshotID string, roots []
 		"--protocol", fmt.Sprint(scanproto.Version),
 	}, s.opts.ExtraArgs...)
 	cmd := exec.Command(s.opts.Executable, args...)
+	stderr := &stderrTail{limit: scanproto.MaxStderrTailBytes}
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		return model.Scan{}, fmt.Errorf("start scanner process: %w", err)
 	}
@@ -235,11 +237,16 @@ func (s *Scan) spawnAndConverse(ctx context.Context, snapshotID string, roots []
 	}()
 	defer s.terminate(cmd)
 
+	// A scanner that dies before listening (a protocol or usage error) only
+	// shows up as a dial timeout unless its last words are attached, so the
+	// sanitized tail annotates this failure too.
 	conn, err := ipcpipe.Dial(name, s.opts.ConnectTimeout)
 	if err != nil {
-		return model.Scan{}, err
+		s.terminate(cmd)
+		return model.Scan{}, withChildStderr(fmt.Errorf("connect scanner: %w", err), stderr.Text())
 	}
-	return s.converse(ctx, conn, roots, snapshotID, func() { s.terminate(cmd) })
+	scan, err := s.converse(ctx, conn, roots, snapshotID, func() { s.terminate(cmd) })
+	return scan, withChildStderr(err, stderr.Text())
 }
 
 // terminate kills and reaps the subprocess if it is still running.
@@ -404,7 +411,12 @@ func (s *Scan) talk(ctx context.Context, stream *scanproto.Conn, jobID, snapshot
 			if entryBudget > 0 && streamed > entryBudget {
 				return model.Scan{}, errViolation
 			}
-			out.Entries = append(out.Entries, message.Entries.Entries...)
+			// With a sink the batch is already persisted; keeping a copy
+			// would double the memory a scan of any size costs. Without one
+			// (tests, in-memory callers) the result carries the entries.
+			if s.opts.Sink == nil {
+				out.Entries = append(out.Entries, message.Entries.Entries...)
+			}
 			// The validated batch also streams straight to the sink; a slow
 			// sink blocks this loop, which blocks the IPC, which slows the
 			// scanner: honest backpressure instead of an unbounded queue.
@@ -475,4 +487,51 @@ func validateEntry(entry model.Entry, roots []string, rootIDs map[string]bool) e
 		}
 	}
 	return errViolation
+}
+
+// stderrTail keeps a bounded rolling copy of the child's stderr. Only the
+// sanitized form of Text() may leave this type: the raw bytes stay here.
+// Writes come from the exec package's copy goroutine and can still be in
+// flight when the conversation returns, so every access takes the mutex.
+type stderrTail struct {
+	mu    sync.Mutex
+	limit int
+	buf   []byte
+}
+
+func (t *stderrTail) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.limit <= 0 {
+		t.limit = scanproto.MaxStderrTailBytes
+	}
+	if len(p) >= t.limit {
+		t.buf = append([]byte(nil), p[len(p)-t.limit:]...)
+		return len(p), nil
+	}
+	need := len(t.buf) + len(p) - t.limit
+	if need > 0 {
+		t.buf = t.buf[need:]
+	}
+	t.buf = append(t.buf, p...)
+	return len(p), nil
+}
+
+func (t *stderrTail) Text() string {
+	if t == nil {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return scanproto.SanitizeDiagnostic(t.buf)
+}
+
+// withChildStderr annotates a connection-level failure with the sanitized
+// child diagnostic. Empty tails and nil errors are left unchanged so a
+// successful scan never grows an error string.
+func withChildStderr(err error, diagnostic string) error {
+	if err == nil || diagnostic == "" {
+		return err
+	}
+	return fmt.Errorf("%w (scanner: %s)", err, diagnostic)
 }

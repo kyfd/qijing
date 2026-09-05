@@ -154,6 +154,58 @@ type RelationsBatch struct {
 	Relations []model.Relation `json:"relations"`
 }
 
+// SendEntries writes a batch as one or more frames that each fit the limit.
+// An entry carries a path, so a fixed entry count is not a bound on the
+// encoded size: a batch of long Unicode paths can exceed the frame limit that
+// the same count of short paths fits comfortably.
+func (c *Conn) SendEntries(entries []model.Entry) error {
+	return sendChunked(len(entries), func(start, end int) error {
+		return c.Send(Message{Type: TypeEntries, Entries: &EntriesBatch{Entries: entries[start:end]}})
+	})
+}
+
+// SendRelations writes derived relations as one or more frames. A large scan
+// can derive far more relations than fit in a single frame, and an oversized
+// frame at the very end would discard a completed traversal.
+func (c *Conn) SendRelations(relations []model.Relation) error {
+	return sendChunked(len(relations), func(start, end int) error {
+		return c.Send(Message{Type: TypeRelations, Relations: &RelationsBatch{Relations: relations[start:end]}})
+	})
+}
+
+// sendChunked halves the chunk whenever send reports an oversized frame, so
+// the split adapts to the data actually being sent rather than to a guessed
+// item count. Only ErrFrameTooLarge is retried: it is raised before any bytes
+// are written, so no partial frame is left on the stream. It fails rather
+// than dropping data when a single item cannot fit, because silently omitting
+// an entry would corrupt the snapshot.
+func sendChunked(total int, send func(start, end int) error) error {
+	if total == 0 {
+		// An empty batch is still a message: the peer distinguishes
+		// "no relations" from "relations not sent yet".
+		return send(0, 0)
+	}
+	size := total
+	for start := 0; start < total; {
+		end := start + size
+		if end > total {
+			end = total
+		}
+		err := send(start, end)
+		if err == nil {
+			start = end
+			continue
+		}
+		if !errors.Is(err, ErrFrameTooLarge) || size == 1 {
+			return err
+		}
+		// Integer division of 1 is 0; the size==1 check above already
+		// returned, so size is at least 2 and the next attempt is smaller.
+		size /= 2
+	}
+	return nil
+}
+
 // Done closes a scan. Roots echo the roots that were actually walked; the
 // broker re-checks that they are a subset of what it authorized.
 type Done struct {
@@ -270,6 +322,11 @@ func (m *Message) Validate() error {
 // fatal and drop the connection.
 var ErrProtocol = errors.New("protocol violation")
 
+// ErrFrameTooLarge is the one protocol error a sender can recover from, by
+// splitting the payload. It is detected before anything is written, so no
+// partial frame reaches the stream and retrying is safe.
+var ErrFrameTooLarge = fmt.Errorf("%w: frame exceeds the limit", ErrProtocol)
+
 // Conn frames messages over any byte stream. Send is safe for concurrent
 // use (the scanner side writes progress and heartbeats from two goroutines);
 // Receive is single-goroutine by contract.
@@ -289,7 +346,7 @@ func (c *Conn) Send(msg Message) error {
 		return err
 	}
 	if len(body) > MaxFrameBytes {
-		return fmt.Errorf("%w: outgoing frame of %d bytes exceeds the limit", ErrProtocol, len(body))
+		return fmt.Errorf("%w: outgoing frame of %d bytes exceeds the limit of %d", ErrFrameTooLarge, len(body), MaxFrameBytes)
 	}
 	var header [4]byte
 	binary.BigEndian.PutUint32(header[:], uint32(len(body)))

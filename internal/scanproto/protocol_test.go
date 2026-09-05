@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -104,6 +105,202 @@ func TestSendRejectsInvalidOutgoingMessages(t *testing.T) {
 	}
 	if buffer.Len() != 0 {
 		t.Fatal("invalid messages must not reach the wire")
+	}
+}
+
+func TestSendRejectsOversizedOutgoingFrameBeforeWriting(t *testing.T) {
+	// A single unsplittable payload must fail closed: dropping it would
+	// silently corrupt the snapshot. The check happens before any bytes
+	// are written, so a retry on a smaller chunk is still safe.
+	var buffer bytes.Buffer
+	conn := NewConn(&buffer)
+	huge := strings.Repeat("x", MaxFrameBytes)
+	err := conn.Send(Message{Type: TypeFatal, Fatal: &Fatal{Code: "scan_failed", Detail: huge}})
+	if !errors.Is(err, ErrFrameTooLarge) {
+		t.Fatalf("expected ErrFrameTooLarge, got %v", err)
+	}
+	if buffer.Len() != 0 {
+		t.Fatalf("oversized frames must not reach the wire, wrote %d bytes", buffer.Len())
+	}
+}
+
+func TestSendRelationsSplitsOversizedBatchAndArrivesWhole(t *testing.T) {
+	// A relation is small, so a few tens of thousands already exceed the
+	// 8 MiB frame. The sender must split rather than abort, and every
+	// relation must still arrive, in order, with no duplicates.
+	const n = 200_000
+	relations := make([]model.Relation, n)
+	for i := range relations {
+		relations[i] = model.Relation{
+			FromID: fmt.Sprintf("from-%06d", i),
+			ToID:   fmt.Sprintf("to-%06d", i),
+			Type:   model.RelationDuplicate,
+		}
+	}
+	var buffer bytes.Buffer
+	sender := NewConn(&buffer)
+	if err := sender.SendRelations(relations); err != nil {
+		t.Fatalf("SendRelations: %v", err)
+	}
+	if buffer.Len() <= 4+MaxFrameBytes {
+		t.Fatalf("expected more than one frame, got %d bytes", buffer.Len())
+	}
+
+	receiver := NewConn(&buffer)
+	var got []model.Relation
+	frames := 0
+	for buffer.Len() > 0 {
+		message, err := receiver.Receive()
+		if err != nil {
+			t.Fatalf("receive frame %d: %v", frames, err)
+		}
+		if message.Type != TypeRelations || message.Relations == nil {
+			t.Fatalf("frame %d: type = %s", frames, message.Type)
+		}
+		got = append(got, message.Relations.Relations...)
+		frames++
+	}
+	if frames < 2 {
+		t.Fatalf("frames = %d, want at least 2", frames)
+	}
+	if len(got) != n {
+		t.Fatalf("received %d relations, want %d", len(got), n)
+	}
+	for i, rel := range got {
+		if rel.FromID != relations[i].FromID || rel.ToID != relations[i].ToID {
+			t.Fatalf("relation %d = %+v, want %+v", i, rel, relations[i])
+		}
+	}
+}
+
+func TestSendEntriesSplitsLongPathBatchAndArrivesWhole(t *testing.T) {
+	// A modest count of very long Unicode paths exceeds the frame even
+	// when the same count of short paths would fit, which is why chunking
+	// is size-adaptive rather than a guessed item count.
+	const n = 5000
+	path := `C:\data\` + strings.Repeat("很长的目录名", 400) + `\file.txt`
+	entries := make([]model.Entry, n)
+	for i := range entries {
+		entries[i] = model.Entry{
+			ID:   fmt.Sprintf("e%d", i),
+			Path: path,
+			Kind: model.KindFile,
+			Size: int64(i),
+		}
+	}
+	var buffer bytes.Buffer
+	sender := NewConn(&buffer)
+	if err := sender.SendEntries(entries); err != nil {
+		t.Fatalf("SendEntries: %v", err)
+	}
+
+	receiver := NewConn(&buffer)
+	var got []model.Entry
+	frames := 0
+	for buffer.Len() > 0 {
+		message, err := receiver.Receive()
+		if err != nil {
+			t.Fatalf("receive frame %d: %v", frames, err)
+		}
+		if message.Type != TypeEntries || message.Entries == nil {
+			t.Fatalf("frame %d: type = %s", frames, message.Type)
+		}
+		got = append(got, message.Entries.Entries...)
+		frames++
+	}
+	if frames < 2 {
+		t.Fatalf("frames = %d, want at least 2", frames)
+	}
+	if len(got) != n {
+		t.Fatalf("received %d entries, want %d", len(got), n)
+	}
+	for i, entry := range got {
+		if entry.ID != entries[i].ID || entry.Path != path || entry.Size != int64(i) {
+			t.Fatalf("entry %d = %+v", i, entry)
+		}
+	}
+}
+
+func TestSendChunkedFailsClosedOnUnsplittableItem(t *testing.T) {
+	// A single item that cannot fit must be reported, never dropped.
+	// Dropping it would make the snapshot look complete while missing data.
+	err := sendChunked(1, func(start, end int) error {
+		if start != 0 || end != 1 {
+			t.Fatalf("range = [%d, %d)", start, end)
+		}
+		return fmt.Errorf("%w: item too large", ErrFrameTooLarge)
+	})
+	if !errors.Is(err, ErrFrameTooLarge) {
+		t.Fatalf("expected ErrFrameTooLarge, got %v", err)
+	}
+}
+
+func TestSendChunkedDoesNotRetryNonSizeErrors(t *testing.T) {
+	calls := 0
+	want := errors.New("pipe closed")
+	err := sendChunked(8, func(start, end int) error {
+		calls++
+		return want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("got %v, want %v", err, want)
+	}
+	if calls != 1 {
+		t.Fatalf("retried a non-size error: %d calls", calls)
+	}
+}
+
+func TestSendChunkedEmptyBatchStillSendsOneFrame(t *testing.T) {
+	calls := 0
+	if err := sendChunked(0, func(start, end int) error {
+		calls++
+		if start != 0 || end != 0 {
+			t.Fatalf("empty range = [%d, %d)", start, end)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("empty batch must still send one frame, got %d calls", calls)
+	}
+}
+
+func TestSendEntriesEmptyBatchWritesOneFrame(t *testing.T) {
+	var buffer bytes.Buffer
+	sender := NewConn(&buffer)
+	if err := sender.SendEntries(nil); err != nil {
+		t.Fatal(err)
+	}
+	receiver := NewConn(&buffer)
+	message, err := receiver.Receive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Type != TypeEntries || message.Entries == nil || len(message.Entries.Entries) != 0 {
+		t.Fatalf("empty entries frame = %+v", message)
+	}
+	if buffer.Len() != 0 {
+		t.Fatalf("expected exactly one frame, leftover %d bytes", buffer.Len())
+	}
+}
+
+func TestSendRelationsEmptyBatchWritesOneFrame(t *testing.T) {
+	var buffer bytes.Buffer
+	sender := NewConn(&buffer)
+	if err := sender.SendRelations(nil); err != nil {
+		t.Fatal(err)
+	}
+	receiver := NewConn(&buffer)
+	message, err := receiver.Receive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Type != TypeRelations || message.Relations == nil || len(message.Relations.Relations) != 0 {
+		t.Fatalf("empty relations frame = %+v", message)
+	}
+	if buffer.Len() != 0 {
+		t.Fatalf("expected exactly one frame, leftover %d bytes", buffer.Len())
 	}
 }
 

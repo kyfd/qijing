@@ -192,7 +192,9 @@ func Serve(conn ipcpipe.Conn, engine Engine, scannerVersion string, heartbeatEve
 			if err := gate.wait(ctx); err != nil {
 				return err
 			}
-			return stream.Send(scanproto.Message{Type: scanproto.TypeEntries, Entries: &scanproto.EntriesBatch{Entries: batch}})
+			// Entries carry paths, so a fixed batch count is not a bound on
+			// the encoded frame size; the stream splits as needed.
+			return stream.SendEntries(batch)
 		},
 	)
 	cancel()
@@ -228,7 +230,10 @@ func Serve(conn ipcpipe.Conn, engine Engine, scannerVersion string, heartbeatEve
 		holdOpen(&reader, closeGrace)
 		return errors.New("scan produced no result")
 	}
-	if err := stream.Send(scanproto.Message{Type: scanproto.TypeRelations, Relations: &scanproto.RelationsBatch{Relations: result.Relations}}); err != nil {
+	// Relations are chunked to fit the frame limit: a large scan can derive
+	// far more relations than fit in one frame, and a single oversized frame
+	// would abort the scan after all the traversal work was already done.
+	if err := stream.SendRelations(result.Relations); err != nil {
 		holdOpen(&reader, closeGrace)
 		return err
 	}

@@ -58,6 +58,11 @@ cmd/qijing-scanner    独立扫描进程入口（只 import 扫描与协议层�
 协议要点：
 
 - 帧 = 4 字节大端长度 + JSON 体；超过 `MaxFrameBytes`（8 MiB）即协议违规。
+- entries 与 relations 由发送方自适应分片（`SendEntries` / `SendRelations`）：
+  条目携带路径，固定条数不是编码大小的上界，因此分片以"发送失败即对半
+  缩小"适配真实数据，而不是猜测条数。单条数据连一帧都放不下时 fail
+  closed（报错而不是静默丢数据——丢一条会让快照看似完整实则缺数据）。
+  `ErrFrameTooLarge` 在写出任何字节之前被检测，重试不会留下半帧。
 - 握手：client 发 `hello{version}`，server 回 `hello_ack{version}`，
   版本不一致立即断开。
 - server → client：`progress`、`entries`（分批 entry）、`relations`、
@@ -91,7 +96,7 @@ cmd/qijing-scanner    独立扫描进程入口（只 import 扫描与协议层�
 | scanner exe 缺失 | 启动扫描即失败并给出明确错误（不静默回退进程内扫描） |
 | 握手版本不匹配 | 立即终止，报协议版本错误 |
 | 心跳超时 / 无响应 | Broker 终止子进程，扫描失败，已有快照不受影响 |
-| scanner 崩溃 | 同上；未保存的进行中结果被丢弃 |
+| scanner 崩溃 | 同上；未保存的进行中结果被丢弃。连接错误附带子进程 stderr 的有界脱敏尾（`SanitizeDiagnostic`：路径、邮箱、长十六进制串一律替换为占位符），崩溃不再只表现为一句 "EOF"；原始 stderr 字节不落日志 |
 | 越权 entry | 致命违规：终止扫描、丢弃结果、记录脱敏错误码 |
 | 用户取消 | 发送 cancel，宽限期后强制终止；保留 partial 状态语义 |
 | 管道被占用/断开 | 重试连接短暂窗口后失败 |
