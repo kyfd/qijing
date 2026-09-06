@@ -4,6 +4,15 @@
 
 ### Trust Hardening（v0.1.x）
 
+- **前端模块拆分**：1065 行的单文件界面拆为原生 ES Modules
+  （`api/ state/ components/ map/ scan/ agent/ recycle/ settings/
+  diagnostics/`），无打包器、无新依赖；地图圆簇布局计算移入
+  Web Worker，主线程只负责渲染，重排不再掉帧，Worker 不可用时
+  回退主线程同一实现。
+  （[ADR 0006](docs/adr/0006-frontend-module-split.md)）
+- **静态资源禁缓存**：嵌入式资源没有修改时间，浏览器会启发式缓存
+  模块并在应用升级后继续使用旧界面。预览服务器与桌面 asset 通道
+  现统一返回 `Cache-Control: no-cache`，升级后永远运行新版本。
 - **协议帧自适应分片**：基准测试（10 万文件、哈希开启）暴露出一个真实缺陷——
   扫描器把全部派生 relations 塞进单帧，超出 8 MiB 帧上限后，扫描在遍历全部
   完成之后才失败，用户只看到一句 "scanner connection: EOF"。现在

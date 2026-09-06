@@ -102,7 +102,22 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/agent/runs/{id}", s.agentStatus)
 	mux.HandleFunc("GET /api/v1/agent/runs/{id}/result", s.agentResult)
 	mux.HandleFunc("GET /api/v1/agent/runs/{id}/audits", s.agentAudits)
-	mux.Handle("/", http.FileServer(http.FS(mustSub(webassets.Assets, "."))))
+	// Embedded assets carry no modtime, so http.FileServer sends no
+	// validators and browsers heuristically cache modules across app
+	// upgrades. A local server gains nothing from that: force revalidation
+	// so a new build is always the UI the user actually runs.
+	mux.Handle("/", noCache(http.FileServer(http.FS(mustSub(webassets.Assets, ".")))))
+}
+
+// noCache marks every static response as requiring revalidation. It never
+// touches /api/ responses, whose caching is governed by their handlers.
+func noCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) security(next http.Handler) http.Handler {

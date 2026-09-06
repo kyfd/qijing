@@ -55,6 +55,33 @@ go mod download
 
 ## 开发循环
 
+### 前端结构
+
+界面是无构建步骤的原生 ES Modules，按功能拆分在 `web/` 下：
+`api/`（传输层）、`state/`（全局状态与分区定义）、`components/`（DOM
+与格式化工具）、`map/`（地图：纯布局函数 `layoutCore`、Worker 编排
+`layout`、节点管道 `nodes`、渲染 `render`、视图 `view`、侧栏 `sidebar`、
+详情 `detail`、演示 `demo`）、`scan/`（状态解析、控件、生命周期、授权
+根目录）、`agent/`（模型配置与巡视）、`recycle/`、`settings/`、
+`diagnostics/`，入口 `app.js` 只做事件绑定。
+
+修改前端时遵守：
+
+1. 布局计算只改 `web/map/layoutCore.js`（纯函数，主线程回退与 Worker
+   共用同一实现）；Worker 通过结构化克隆返回副本，坐标必须按位拷回
+   主线程原对象（见 `nodes.js` 的 `layoutCurrentNodes`）。
+2. 模块间依赖保持单向；`scan/roots` 与 `scan/controller` 的相互调用
+   只能发生在函数体内（活绑定），不得在模块顶层执行。
+3. 不引入打包器或运行时依赖；新增目录要同步加入 `web/embed.go` 的
+   `//go:embed` 模式，否则发布包会缺少该模块。
+4. 每个模块可用
+   `node --input-type=module --check < web/xxx/yyy.js`
+   做语法门禁。
+5. 验证界面用 `go build -o build/qijing-preview.exe ./cmd/qijing-preview`
+   后运行 `build/qijing-preview.exe serve`，在浏览器打开
+   `http://127.0.0.1:8765`；静态资源带 `Cache-Control: no-cache`，
+   改动刷新即生效。
+
 ### 格式化
 
 ```powershell
